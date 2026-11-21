@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Builds the libraries Hardcharger's built-in DuckDB extensions link
+# (server/scripts/duckdb-extensions.cmake) into server/.deps, static and position
+# independent (they end up inside libduckdb), so the server needs neither at run time:
+#
+#   CRoaring  ducklake's deletion vectors          -> server/.deps/roaring-install
+#   libpq     the postgres scanner (PostgreSQL)    -> server/.deps/libpq-install
+#   libcurl   httpfs, on Linux                     -> server/.deps/curl-install
+#
+# OpenSSL comes from $OPENSSL_ROOT_DIR (or the system). httpfs needs libcurl 7.85 or newer
+# (EL8 has 7.61): Linux builds their own, macOS uses the system's, and iOS, which has none,
+# builds its own too. For iOS (HARDCHARGER_IOS_SDK set, ios/scripts/build-server-ios.sh)
+# each is cross-compiled: CMake through CMAKE_TOOLCHAIN_FILE (ios/cmake/ios.toolchain.cmake,
+# from the environment), libpq's configure with the SDK's compiler as a cross build. Built without a CA
+# bundle path: httpfs finds the system's bundle itself and hands it to curl.
+# Each is built once (a stamp names its version); build-deps.sh runs this.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPS="${CHARGEWIRE_DEPS_DIR:-$HERE/.deps}"
+JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
+
+ROARING_VERSION=5.5.5
+ROARING_SHA256=f78a93b8cf373fe4a3d31075cf2b3dc21dcfd7bbbc17674df35071ec8e461aef
+POSTGRES_VERSION=18.6
+POSTGRES_SHA256=555610c24d53e4316da5b7d3fc25c279d96856d5e0e23ee308c328c5fa881d9f
+CURL_VERSION=8.23.0
+CURL_SHA256=8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5
+
+IOS="${HARDCHARGER_IOS_SDK:-}"
+ANDROID="${HARDCHARGER_ANDROID_ABI:-}"
+MOBILE="${IOS:-$ANDROID}"
+if [ -n "$IOS" ] && [ -z "${CMAKE_TOOLCHAIN_FILE:-}" ]; then
+  echo "HARDCHARGER_IOS_SDK=$IOS needs CMAKE_TOOLCHAIN_FILE (ios/cmake/ios.toolchain.cmake)" >&2; exit 2
+fi
+
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+fetch() {  # url sha256 dir: download, verify, unpack into dir
+  curl -fsSL -o "$3.tar" "$1"
+  [ "$(sha256 "$3.tar")" = "$2" ] || { echo "checksum mismatch for $1" >&2; exit 1; }
+  mkdir -p "$3" && tar -xf "$3.tar" -C "$3" --strip-components=1 && rm "$3.tar"
+}
+
+mkdir -p "$DEPS"
+ROARING="$DEPS/roaring-install"
+if [ ! -f "$ROARING/.roaring-$ROARING_VERSION-nonative.stamp" ]; then
+  src=$(mktemp -d)
+  fetch "https://github.com/RoaringBitmap/CRoaring/archive/refs/tags/v$ROARING_VERSION.tar.gz" \
+    "$ROARING_SHA256" "$src/roaring"
+  rm -rf "$ROARING"
+  cmake -S "$src/roaring" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$ROARING" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_ROARING_TESTS=OFF -DROARING_USE_CPM=OFF \
+    -DROARING_DISABLE_NATIVE=ON >/dev/null
+  cmake --build "$src/build" >/dev/null
+  cmake --install "$src/build" >/dev/null
+  rm -rf "$src"
+  touch "$ROARING/.roaring-$ROARING_VERSION-nonative.stamp"
+fi
+
+LIBPQ="$DEPS/libpq-install"
+if [ ! -f "$LIBPQ/.libpq-$POSTGRES_VERSION.stamp" ]; then
+  src=$(mktemp -d)
+  fetch "https://ftp.postgresql.org/pub/source/v$POSTGRES_VERSION/postgresql-$POSTGRES_VERSION.tar.bz2" \
+    "$POSTGRES_SHA256" "$src/postgres"
+  rm -rf "$LIBPQ"
+  # (Expanded as ${a[@]+"${a[@]}"}: macOS's bash 3.2 calls an empty array unbound under set -u.)
+  ssl_flags=()
+  if [ -n "${OPENSSL_ROOT_DIR:-}" ]; then
+    ssl_flags=(--with-includes="$OPENSSL_ROOT_DIR/include" --with-libraries="$OPENSSL_ROOT_DIR/lib")
+  fi
+  cross=()
+  if [ -n "$IOS" ]; then
+    # A cross build with the SDK's compiler. PG_SYSROOT: PostgreSQL's darwin template would
+    # otherwise add the macOS SDK.
+    min="${HARDCHARGER_IOS_DEPLOYMENT_TARGET:-18.0}"
+    triple="arm64-apple-ios$min"; [ "$IOS" = iphonesimulator ] && triple="$triple-simulator"
+    sysroot=$(xcrun --sdk "$IOS" --show-sdk-path)
+    cross=(--host=aarch64-apple-darwin "CC=$(xcrun --sdk "$IOS" -f clang) -target $triple -isysroot $sysroot"
+           "PG_SYSROOT=$sysroot")
+  fi
+  if [ -n "$ANDROID" ]; then
+    case "$(uname)" in Darwin) ndk_host=darwin-x86_64 ;; *) ndk_host=linux-x86_64 ;; esac
+    bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$ndk_host/bin"
+    case "$ANDROID" in arm64-v8a) triple=aarch64-linux-android ;; x86_64) triple=x86_64-linux-android ;; esac
+    cross=(--host="$triple" "CC=$bin/${triple}28-clang" "AR=$bin/llvm-ar" "RANLIB=$bin/llvm-ranlib")
+  fi
+  (cd "$src/postgres" \
+     && CFLAGS="${CFLAGS:-} -O2 -fPIC" ./configure --prefix="$LIBPQ" --with-ssl=openssl ${ssl_flags[@]+"${ssl_flags[@]}"} \
+          ${cross[@]+"${cross[@]}"} \
+          --without-readline --without-icu --without-zlib --without-zstd --without-lz4 \
+          --without-gssapi --without-ldap >/dev/null \
+     && make -s -j"$JOBS" -C src/include >/dev/null \
+     && make -s -j"$JOBS" -C src/common >/dev/null \
+     && make -s -j"$JOBS" -C src/port >/dev/null \
+     && make -s -j"$JOBS" -C src/interfaces/libpq all-static-lib >/dev/null \
+     && make -s -C src/include install >/dev/null)
+  # The static library only (no shared one for CMake's FindPostgreSQL to prefer), as one
+  # archive that also carries the PostgreSQL common and port code it calls (libpq.a alone
+  # leaves those to the shared library's link).
+  mkdir -p "$LIBPQ/lib"
+  cp "$src/postgres/src/interfaces/libpq/libpq-fe.h" "$src/postgres/src/interfaces/libpq/libpq-events.h" \
+    "$LIBPQ/include/"
+  cp "$src/postgres/src/interfaces/libpq/libpq.a" "$LIBPQ/lib/libpq.a"
+  combined="$src/libpq-combined.a"
+  if [ -n "$ANDROID" ]; then
+    printf 'create %s\naddlib %s\naddlib %s\naddlib %s\nsave\nend\n' "$combined" "$LIBPQ/lib/libpq.a" \
+      "$src/postgres/src/common/libpgcommon_shlib.a" "$src/postgres/src/port/libpgport_shlib.a" | "$bin/llvm-ar" -M
+  elif [ "$(uname)" = Darwin ]; then
+    libtool -static -o "$combined" "$LIBPQ/lib/libpq.a" \
+      "$src/postgres/src/common/libpgcommon_shlib.a" "$src/postgres/src/port/libpgport_shlib.a"
+  else
+    printf 'create %s\naddlib %s\naddlib %s\naddlib %s\nsave\nend\n' "$combined" "$LIBPQ/lib/libpq.a" \
+      "$src/postgres/src/common/libpgcommon_shlib.a" "$src/postgres/src/port/libpgport_shlib.a" | ar -M
+  fi
+  mv "$combined" "$LIBPQ/lib/libpq.a"
+  rm -rf "$src"
+  touch "$LIBPQ/.libpq-$POSTGRES_VERSION.stamp"
+fi
+CURL="$DEPS/curl-install"
+if { [ "$(uname)" != Darwin ] || [ -n "$MOBILE" ]; } && [ ! -f "$CURL/.curl-$CURL_VERSION.stamp" ]; then
+  src=$(mktemp -d)
+  fetch "https://curl.se/download/curl-$CURL_VERSION.tar.xz" "$CURL_SHA256" "$src/curl"
+  rm -rf "$CURL"
+  ssl_root=()
+  if [ -n "${OPENSSL_ROOT_DIR:-}" ]; then ssl_root=(-DOPENSSL_ROOT_DIR="$OPENSSL_ROOT_DIR" -DOPENSSL_USE_STATIC_LIBS=TRUE); fi
+  cmake -S "$src/curl" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$CURL" -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_LIBCURL_DOCS=OFF \
+    -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF -DBUILD_TESTING=OFF -DCURL_USE_OPENSSL=ON "${ssl_root[@]}" \
+    -DCURL_CA_BUNDLE=none -DCURL_CA_PATH=none -DCURL_DISABLE_LDAP=ON -DCURL_USE_LIBPSL=OFF \
+    -DCURL_USE_LIBSSH2=OFF -DUSE_LIBIDN2=OFF -DUSE_NGHTTP2=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF \
+    -DCURL_ZLIB=OFF >/dev/null
+  cmake --build "$src/build" >/dev/null
+  cmake --install "$src/build" >/dev/null
+  rm -rf "$src"
+  touch "$CURL/.curl-$CURL_VERSION.stamp"
+fi
+echo "extension libraries built in $DEPS"

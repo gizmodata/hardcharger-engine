@@ -14,12 +14,20 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+SDK_PLATFORMS = (
+    "linux-amd64", "linux-amd64-baseline", "linux-arm64", "macos-arm64",
+    "ios-iphoneos", "ios-iphonesimulator", "android-arm64-v8a", "android-x86_64",
+    "windows-amd64", "windows-arm64", "linux-arm64-ubuntu", "linux-arm64-tsan",
+)
+
+
 def release_files(directory):
     archives = sorted(
         directory / f"hardcharger-engine-{kind}-{platform}.tar.gz"
         for kind in ("cli", "shared-libs")
         for platform in ("linux-amd64", "linux-arm64", "macos-arm64")
     )
+    archives.extend(directory / f"hardcharger-engine-sdk-{platform}.tar.gz" for platform in SDK_PLATFORMS)
     checksums = directory / "SHA256SUMS"
     signatures = {}
     lines = []
@@ -86,7 +94,7 @@ def publish(repo, tag, sha, directory):
         raise ValueError(f"{tag} points to {current}, expected tested commit {sha}")
     if release is None:
         notes = (
-            "CLI and C SDK builds for Linux x86-64, Linux ARM64, and Apple Silicon. "
+            "CLI and C SDK builds for Linux and Apple Silicon, plus Hardcharger integration SDKs for Linux, macOS, iOS, Android and Windows. "
             f"See the [engine differences](https://github.com/{repo}/blob/{tag}/docs/optimizations.md) "
             "for the upstream baseline and measured results."
         )

@@ -1,0 +1,83 @@
+name: Hardcharger integration SDKs
+on: workflow_call
+permissions:
+  contents: read
+jobs:
+  sdk:
+    name: SDK (${{ matrix.flavor }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {flavor: linux-amd64, runner: ubuntu-24.04, image: 'quay.io/pypa/manylinux_2_28_x86_64:2026.10.10-1@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae'}
+          - {flavor: linux-amd64-baseline, runner: ubuntu-24.04, image: 'quay.io/pypa/manylinux_2_28_x86_64:2026.10.10-1@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae'}
+          - {flavor: linux-arm64, runner: ubuntu-24.04-arm, image: 'quay.io/pypa/manylinux_2_28_aarch64:2026.10.10-1@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6'}
+          - {flavor: macos-arm64, runner: macos-15}
+          - {flavor: ios-iphoneos, runner: xcode-27}
+          - {flavor: ios-iphonesimulator, runner: xcode-27}
+          - {flavor: android-arm64-v8a, runner: ubuntu-24.04}
+          - {flavor: android-x86_64, runner: ubuntu-24.04}
+          - {flavor: windows-amd64, runner: windows-latest, msvc: x64}
+          - {flavor: windows-arm64, runner: windows-11-arm, msvc: arm64}
+          - {flavor: linux-arm64-ubuntu, runner: ubuntu-24.04-arm}
+          - {flavor: linux-arm64-tsan, runner: ubuntu-24.04-arm}
+    defaults:
+      run:
+        shell: bash
+    env:
+      FLAVOR: ${{ matrix.flavor }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja on macOS
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+      - name: Select Xcode 27
+        if: startsWith(matrix.flavor, 'ios-')
+        run: |
+          xcode=$(find /Applications -maxdepth 1 -name 'Xcode_27*.app' | grep -E '/Xcode_27([.][0-9]+)*[.]app$' | sort -V | tail -1)
+          test -n "$xcode"
+          sudo xcode-select -s "$xcode/Contents/Developer"
+      - name: Install Android NDK
+        if: startsWith(matrix.flavor, 'android-')
+        run: |
+          sdkmanager 'ndk;28.2.13676358'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.msvc }}
+      - name: Install static Windows OpenSSL
+        if: runner.os == 'Windows'
+        env:
+          ARCH: ${{ matrix.msvc }}
+        run: |
+          /c/vcpkg/vcpkg.exe install "openssl:$ARCH-windows-static"
+          printf 'VCPKG_ROOT=%s\n' 'C:\vcpkg' >> "$GITHUB_ENV"
+          echo "VCPKG_TRIPLET=$ARCH-windows-static" >> "$GITHUB_ENV"
+      - name: Prepare native Linux tools
+        if: runner.os == 'Linux' && !matrix.image
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build clang flex bison libssl-dev
+          if [[ "$FLAVOR" == linux-arm64-tsan ]]; then sudo sysctl -w vm.mmap_rnd_bits=28; fi
+      - name: Build portable Linux SDK
+        if: matrix.image != ''
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" -e FLAVOR "$IMAGE" bash -euc '
+            git config --global --add safe.directory "*"
+            dnf install -y -q --setopt=retries=8 ninja-build perl-IPC-Cmd perl-Pod-Html perl-Time-Piece flex bison
+            export PATH="/opt/python/cp312-cp312/bin:$PATH"
+            tools/hardcharger-sdk/build.sh "$FLAVOR"'
+      - name: Build native or cross-compiled SDK
+        if: "!matrix.image"
+        run: tools/hardcharger-sdk/build.sh "$FLAVOR"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-sdk-${{ matrix.flavor }}
+          path: dist/hardcharger-engine-sdk-${{ matrix.flavor }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7

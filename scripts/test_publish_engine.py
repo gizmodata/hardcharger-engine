@@ -19,6 +19,9 @@ class TestPublishEngine(unittest.TestCase):
             for platform in ("linux-amd64", "linux-arm64", "macos-arm64"):
                 name = f"hardcharger-engine-{kind}-{platform}.tar.gz"
                 (self.directory / name).write_text(name)
+        for platform in publish_engine.SDK_PLATFORMS:
+            name = f"hardcharger-engine-sdk-{platform}.tar.gz"
+            (self.directory / name).write_text(name)
         self.commit = None
         self.release = None
         self.commands = []
@@ -71,8 +74,8 @@ class TestPublishEngine(unittest.TestCase):
         self.publish()
         self.assertEqual(["upload", "edit"], [args[1] for args in self.commands])
         uploads = self.commands[0]
-        self.assertEqual(4, len(uploads[uploads.index("--clobber") + 1:]))
-        self.assertEqual(7, len(self.release["assets"]))
+        self.assertEqual(4 + len(publish_engine.SDK_PLATFORMS), len(uploads[uploads.index("--clobber") + 1:]))
+        self.assertEqual(7 + len(publish_engine.SDK_PLATFORMS), len(self.release["assets"]))
         self.commands.clear()
         self.publish()
         self.assertEqual([], self.commands)

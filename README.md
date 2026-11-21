@@ -27,6 +27,19 @@ Choose the CLI archive for your operating system and CPU from the [engine releas
 
 For embedded applications, the shared-library archive includes `libduckdb` and the DuckDB C headers. Existing code can continue to include `duckdb.h` and link with `-lduckdb`. [DuckDB C API](https://duckdb.org/docs/stable/clients/c/overview) · [DuckDB SQL reference](https://duckdb.org/docs/stable/sql/introduction)
 
+## Libraries for Hardcharger builds
+
+Hardcharger uses the `hardcharger-engine-sdk-<platform>.tar.gz` archives. Each contains the engine libraries, internal headers, and platform-specific files needed to link the server. The archive records its source commit and target under `share/hardcharger-engine/`. The release publishes a SHA-256 checksum for every archive.
+
+| Target | SDK variants |
+|---|---|
+| Linux x86-64 | Optimized and baseline CPU builds for glibc 2.28 |
+| Linux ARM64 | Portable glibc 2.28 build and separate Ubuntu and ThreadSanitizer test builds |
+| macOS | Apple Silicon |
+| iOS | ARM64 device and ARM64 simulator |
+| Android | ARM64 and x86-64 with NDK 28.2 |
+| Windows | x86-64 and ARM64 with the static MSVC runtime |
+
 ## Build and test
 
 From a checkout with CMake, Python 3, and a C++17 compiler, run the following from the repository root.
