@@ -332,6 +332,30 @@ static unique_ptr<FunctionLocalState> InitScalarCapture(ExpressionState &, const
 	return nullptr;
 }
 
+static bool HasAdjacentRegexInputs(const Vector &strings) {
+	auto size = strings.size();
+	if (size < 16 || (strings.GetVectorType() != VectorType::FLAT_VECTOR &&
+	                  (strings.GetVectorType() != VectorType::DICTIONARY_VECTOR ||
+	                   DictionaryVector::Child(strings).GetVectorType() != VectorType::FLAT_VECTOR))) {
+		return false;
+	}
+	// Comparing long, distinct strings can cost more than rejecting a simple regex.
+	// Only pay for per-row comparisons in a batch where a small sample finds a run.
+	UnifiedVectorFormat input;
+	strings.ToUnifiedFormat(input);
+	auto values = UnifiedVectorFormat::GetData<string_t>(input);
+	auto stride = size / 16;
+	for (idx_t i = 1; i < size; i += stride) {
+		auto previous = input.sel->get_index(i - 1);
+		auto current = input.sel->get_index(i);
+		if (input.validity.RowIsValid(previous) && input.validity.RowIsValid(current) &&
+		    values[previous] == values[current]) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void RegexExtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	const auto &info = func_expr.BindInfo()->Cast<RegexpExtractBindData>();
@@ -345,6 +369,20 @@ static void RegexExtractFunction(DataChunk &args, ExpressionState &state, Vector
 
 	if (info.constant_pattern) {
 		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<ScalarCaptureState>();
+		if (!HasAdjacentRegexInputs(strings)) {
+			if (!lstate.short_pattern) {
+				UnaryExecutor::Execute<string_t, string_t>(strings, result, [&](string_t input) {
+					return ExtractCaptureGroup(input, lstate.constant_pattern, info.group_index,
+					                           info.no_match_returns_input);
+				});
+			} else {
+				UnaryExecutor::Execute<string_t, string_t>(strings, result, [&](string_t input) {
+					return ExtractCaptureGroup(input, lstate.PatternFor(input), info.group_index,
+					                           info.no_match_returns_input);
+				});
+			}
+			return;
+		}
 		// A flat or sliced input can have runs of equal strings even without a storage dictionary.
 		// The result already retains the input heap, so equal adjacent values can share their capture.
 		bool have_previous = false;
