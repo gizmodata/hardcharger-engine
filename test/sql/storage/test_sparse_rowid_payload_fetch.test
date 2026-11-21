@@ -1,0 +1,72 @@
+# name: test/sql/storage/test_sparse_rowid_payload_fetch.test
+# description: Sparse row-ID filters preserve visibility, payloads, and unpushed predicates
+# group: [storage]
+
+statement ok
+CREATE TABLE items AS SELECT i AS k, (i * 37) % 8191 AS rank, CASE WHEN i % 3 <> 0 THEN 'payload-' || i END AS payload FROM range(8192) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+CREATE TABLE keys(r BIGINT);
+
+statement ok
+INSERT INTO keys VALUES (7), (155), (7800), (7), (NULL);
+
+query III rowsort
+SELECT i.k, i.rank, i.payload FROM items i JOIN keys ON i.rowid=keys.r;
+----
+155	5735	payload-155
+7	259	payload-7
+7	259	payload-7
+7800	1915	NULL
+
+query I rowsort
+SELECT i.k FROM items i JOIN keys ON i.rowid=keys.r WHERE i.k<155;
+----
+7
+7
+
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM items WHERE k=7;
+
+statement ok
+UPDATE items SET payload='updated' WHERE k=155;
+
+statement ok
+INSERT INTO items VALUES (8192, 0, 'local');
+
+# A transaction-local row ID may appear alongside committed row IDs.
+query II rowsort
+WITH wanted AS MATERIALIZED (SELECT rowid AS r FROM items WHERE k IN (155,8192)) SELECT i.k,i.payload FROM items i JOIN wanted ON i.rowid=wanted.r;
+----
+155	updated
+8192	local
+
+query II rowsort
+SELECT i.k, i.payload FROM items i JOIN keys ON i.rowid=keys.r;
+----
+155	updated
+7800	NULL
+
+statement ok
+ROLLBACK;
+
+statement ok
+INSERT INTO keys VALUES(-1), (999999999);
+
+query I
+SELECT count(*) FROM items i WHERE EXISTS (SELECT 1 FROM keys WHERE r=i.rowid);
+----
+3
+
+# Check final ordering and a projected nullable payload on an actual Top-N.
+query III
+SELECT k,rank,payload FROM items WHERE k>0 ORDER BY rank,k LIMIT 2;
+----
+8191	0	payload-8191
+6420	1	NULL

@@ -1003,6 +1003,69 @@ bool TryScanIndex(const IndexReadHandle<ART> &art, const ColumnList &column_list
 	return true;
 }
 
+// A small join build can push a set of exact row IDs into the payload scan of a late-materialized Top-N.
+// Fetch these rows through the same MVCC path as an index probe and avoid reading an entire vector of wide columns.
+static unique_ptr<GlobalTableFunctionState> TryFetchOptionalRowIds(ClientContext &context,
+                                                                   TableFunctionInitInput &input,
+                                                                   const TableScanBindData &bind_data,
+                                                                   DataTable &storage) {
+	if (bind_data.is_create_index || (bind_data.order_options && (bind_data.order_options->row_group_offset ||
+	                                                              bind_data.order_options->leading_null_group_offset ||
+	                                                              bind_data.order_options->row_limit.IsValid()))) {
+		return nullptr;
+	}
+	optional_ptr<const TableFilter> row_filter;
+	for (const auto &entry : *input.filters) {
+		const auto &column = input.column_indexes[entry.GetIndex().GetIndex()];
+		if (column.IsRowIdColumn()) {
+			row_filter = entry.Filter();
+		}
+	}
+	if (!row_filter || storage.GetTotalRows() < STANDARD_VECTOR_SIZE) {
+		return nullptr;
+	}
+	// Point fetches do not execute table filters on persistent rows. Only hints whose consumers recheck them qualify.
+	for (const auto &entry : *input.filters) {
+		if (entry.Filter().filter_type != TableFilterType::EXPRESSION_FILTER ||
+		    !ExpressionFilter::IsOptionalFilter(entry.Filter())) {
+			return nullptr;
+		}
+	}
+	for (const auto &column : input.column_indexes) {
+		if (column.IsVirtualColumn() && !column.IsRowIdColumn()) {
+			return nullptr;
+		}
+	}
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(*row_filter, "TryFetchOptionalRowIds");
+	if (expr_filter.column_indexes.size() > 1) {
+		return nullptr;
+	}
+	value_set_t values;
+	vector<ComparisonCondition> comparisons;
+	if (!CollectValuesAndComparisonsFromExpression(*expr_filter.expr, values, comparisons) || values.empty() ||
+	    values.size() > STANDARD_VECTOR_SIZE) {
+		return nullptr;
+	}
+	auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
+	if (LocalStorage::Get(context, duck_table.catalog).GetStorage(storage)) {
+		return nullptr;
+	}
+	auto &tx = DuckTransaction::Get(context, duck_table.catalog);
+	auto vacuum_lock = DuckTransactionManager::Get(storage.GetAttached()).SharedVacuumLock();
+	set<row_t> row_ids;
+	for (const auto &value : values) {
+		if (value.type() != LogicalType::ROW_TYPE) {
+			return nullptr;
+		}
+		auto row_id = BigIntValue::Get(value);
+		if (row_id < 0 || row_id >= MAX_ROW_ID || !storage.CanFetch(tx, row_id)) {
+			return nullptr;
+		}
+		row_ids.insert(row_id);
+	}
+	return DuckIndexScanInitGlobal(context, input, bind_data, row_ids, std::move(vacuum_lock));
+}
+
 unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	D_ASSERT(input.bind_data);
 
@@ -1025,6 +1088,10 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 		return DuckTableScanInitGlobal(context, input, storage, bind_data);
 	}
 
+	auto row_id_scan = TryFetchOptionalRowIds(context, input, bind_data, storage);
+	if (row_id_scan) {
+		return row_id_scan;
+	}
 	auto &filter_set = *input.filters;
 
 	// FIXME: We currently only support scanning one ART with one filter.
