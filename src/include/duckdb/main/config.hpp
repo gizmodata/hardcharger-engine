@@ -290,6 +290,10 @@ public:
 	DUCKDB_API void SetOption(const Identifier &name, Value value);
 	DUCKDB_API void SetOption(idx_t setting_index, Value value);
 	DUCKDB_API void SetOptionByName(const Identifier &name, const Value &value);
+	//! Opt-in embedder behaviors. These per-database flags are set before startup and have no SQL setters.
+	static constexpr const char *REQUIRE_HOST_OPT_IN = "hardcharger_require_extension_repository_opt_in";
+	static constexpr const char *DELAY_QUERY_PROGRESS = "hardcharger_delay_query_progress";
+	bool IsStartupFlagEnabled(const Identifier &name) const;
 	DUCKDB_API void SetOptionsByName(const identifier_map_t<Value> &values);
 	DUCKDB_API void ResetOption(optional_ptr<DatabaseInstance> db, const ConfigurationOption &option);
 	DUCKDB_API void ResetOption(const ExtensionOption &extension_option);

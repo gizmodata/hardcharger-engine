@@ -310,13 +310,14 @@ void ExtensionRepositoryManager::CheckCanCreate(DatabaseInstance &db, const stri
 	// repository resolved from its host: the name says who is trusted, and the host's own file says what, so the
 	// 'hosts' default lets it through
 	auto access = GetAccess(db);
-	// Hardcharger: under the default 'hosts', a repository named by its host needs the same explicit
-	// opt-in as one given by prefix (DuckDB 2.0.0's rule).
-	if (access == ExtensionRepositoryAccess::ALLOWED || (from_host && access == ExtensionRepositoryAccess::HOSTS_ONLY)) {
+	bool require_host_opt_in = DBConfig::GetConfig(db).IsStartupFlagEnabled(DBConfig::REQUIRE_HOST_OPT_IN);
+	if (access == ExtensionRepositoryAccess::ALLOWED ||
+	    (from_host && (access == ExtensionRepositoryAccess::HOSTS_ONLY ||
+	                   (access == ExtensionRepositoryAccess::HOSTS && !require_host_opt_in)))) {
 		return;
 	}
 	string message;
-	if (access == ExtensionRepositoryAccess::HOSTS) {
+	if (access == ExtensionRepositoryAccess::HOSTS && require_host_opt_in) {
 		message = StringUtil::Format(
 		    "Cannot create extension repository '%s': adding a repository trusts a new signing key, and this server "
 		    "adds none until an administrator allows it. Run SET GLOBAL allow_extension_repositories = 'allowed' "

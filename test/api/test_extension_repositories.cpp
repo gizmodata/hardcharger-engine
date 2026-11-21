@@ -240,6 +240,25 @@ TEST_CASE("Test that a stored repository file is only believed about a host it i
 	REQUIRE(!trusted);
 }
 
+TEST_CASE("An embedder can require explicit opt-in for host extension repositories", "[api]") {
+	auto repository_directory = TestCreatePath("extension_repositories_embedder_policy");
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName(DBConfig::REQUIRE_HOST_OPT_IN, "true");
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_FAIL(con.Query("SET hardcharger_require_extension_repository_opt_in = false"));
+	REQUIRE_FAIL(con.Query("RESET hardcharger_require_extension_repository_opt_in"));
+	auto refused = con.Query("CREATE EXTENSION REPOSITORY engine-test.invalid");
+	REQUIRE(refused->HasError());
+	REQUIRE(StringUtil::Contains(refused->GetError(), "until an administrator allows it"));
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='allowed'"));
+	// A local prefix exercises explicit opt-in without depending on network access.
+	auto prefix = TestCreatePath("extension_repositories_embedder_prefix");
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY acme WITH PREFIX '%s' USING PUBLIC KEY '%s'", prefix, TEST_PUBLIC_KEY)));
+}
+
 TEST_CASE("Test that a repository resolved from its host does not need the opt-in", "[api]") {
 	auto repository_directory = TestCreatePath("extension_repositories_from_host");
 	auto prefix = TestCreatePath("extension_repositories_from_host_prefix");

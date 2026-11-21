@@ -396,7 +396,21 @@ void DBConfig::SetOption(const ConfigurationOption &option, const Value &value) 
 	SetOption(nullptr, option, value);
 }
 
+bool DBConfig::IsStartupFlagEnabled(const Identifier &name) const {
+	auto it = options.user_options.find(name);
+	return it != options.user_options.end() && BooleanValue::Get(it->second);
+}
+
 void DBConfig::SetOptionByName(const Identifier &name, const Value &value) {
+	if (name == REQUIRE_HOST_OPT_IN || name == DELAY_QUERY_PROGRESS) {
+		// The embedder supplies this at database creation. Keep it outside the SQL settings registry.
+		auto enabled = value.DefaultCastAs(LogicalType::BOOLEAN);
+		if (enabled.IsNull()) {
+			throw InvalidInputException("Startup option %s requires a boolean", name.GetIdentifierName());
+		}
+		options.user_options[name] = std::move(enabled);
+		return;
+	}
 	if (is_user_config) {
 		// for user config we just set the option in the `user_options`
 		options.user_options[name] = value;
