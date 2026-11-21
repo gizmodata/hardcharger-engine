@@ -1,4 +1,4 @@
-"""Publish the six archives from one successful engine CI run. Safe to retry."""
+"""Publish the tested CLI, C SDK, and integration SDK archives from one engine CI run."""
 
 import hashlib
 import json
