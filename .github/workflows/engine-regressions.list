@@ -1,0 +1,8 @@
+Automatic read-ahead grows its backlog within the memory budget
+test/optimizer/disjunctive_join.test
+test/optimizer/statistics/timestamp_date_join_domain.test
+test/sql/filter/fused_integral_scan_range.test
+test/sql/function/string/regex_extract_adjacent.test
+test/sql/function/string/regex_extract_unrestricted_suffix.test
+test/sql/function/string/test_contains_candidate_bounds.test
+test/sql/storage/test_sparse_rowid_payload_fetch.test
