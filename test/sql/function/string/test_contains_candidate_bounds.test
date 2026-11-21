@@ -1,0 +1,23 @@
+# name: test/sql/function/string/test_contains_candidate_bounds.test
+# description: Check the suffix of short and medium substring candidates and the final search position
+# group: [string]
+
+statement ok
+CREATE TABLE needles AS SELECT n, left('0123456789abcdefghi', n::INTEGER) AS needle FROM range(1, 20) t(n);
+
+# The first candidate can differ in any byte, including the overlap between the two loads.
+query I
+SELECT count(*) FROM needles, LATERAL range(1, n + 1) t(pos)
+WHERE strpos(overlay(needle PLACING 'X' FROM pos::INTEGER FOR 1) || '!' || needle, needle) <> n + 2;
+----
+0
+
+query III
+SELECT count_if(contains(needle, needle)), count_if(contains(needle[1:-2], needle)), count_if(contains('!!' || needle[1:-2], needle)) FROM needles;
+----
+19	0	0
+
+query III
+SELECT strpos('ab' || chr(0) || '012345678', chr(0) || '012345678'), contains('é012345678é', '012345678é'), contains(NULL::VARCHAR, '012345678');
+----
+3	true	NULL

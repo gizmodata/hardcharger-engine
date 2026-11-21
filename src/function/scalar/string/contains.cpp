@@ -21,14 +21,12 @@ struct ContainsAligned {
 	}
 };
 
-struct ContainsUnaligned {
+struct ContainsOverlapping {
 	template <class UNSIGNED>
 	static bool MatchRemainder(const unsigned char *haystack, const unsigned char *needle, idx_t needle_size) {
-		idx_t matches = 0;
-		for (idx_t i = sizeof(UNSIGNED); i < needle_size; i++) {
-			matches += haystack[i] == needle[i];
-		}
-		return matches == needle_size - sizeof(UNSIGNED);
+		// The prefix and suffix loads together cover the entire needle.
+		const idx_t suffix = needle_size - sizeof(UNSIGNED);
+		return Load<UNSIGNED>(haystack + suffix) == Load<UNSIGNED>(needle + suffix);
 	}
 };
 
@@ -104,7 +102,9 @@ static idx_t ContainsLong(const unsigned char *haystack, idx_t haystack_size, co
 	idx_t full_compares = 0;
 	for (idx_t offset = 0; offset < candidate_end; offset++) {
 		auto location =
-		    static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], candidate_end - offset));
+		    offset == 0
+		        ? haystack
+		        : static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], candidate_end - offset));
 		if (!location) {
 			return DConstants::INVALID_INDEX;
 		}
@@ -133,8 +133,11 @@ struct ContainsOperator {
 
 idx_t FindStrInStr(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle, idx_t needle_size) {
 	D_ASSERT(needle_size > 0);
-	// start off by performing a memchr to find the first character of the
-	auto location = memchr(haystack, needle[0], haystack_size);
+	if (needle_size > haystack_size) {
+		return DConstants::INVALID_INDEX;
+	}
+	// Only search positions at which the entire needle fits.
+	auto location = memchr(haystack, needle[0], haystack_size - needle_size + 1);
 	if (location == nullptr) {
 		return DConstants::INVALID_INDEX;
 	}
@@ -148,18 +151,21 @@ idx_t FindStrInStr(const unsigned char *haystack, idx_t haystack_size, const uns
 	case 2:
 		return Contains<uint16_t, ContainsAligned>(haystack, haystack_size, needle, 2, base_offset);
 	case 3:
-		return Contains<uint16_t, ContainsUnaligned>(haystack, haystack_size, needle, 3, base_offset);
+		return Contains<uint16_t, ContainsOverlapping>(haystack, haystack_size, needle, 3, base_offset);
 	case 4:
 		return Contains<uint32_t, ContainsAligned>(haystack, haystack_size, needle, 4, base_offset);
 	case 5:
-		return Contains<uint32_t, ContainsUnaligned>(haystack, haystack_size, needle, 5, base_offset);
+		return Contains<uint32_t, ContainsOverlapping>(haystack, haystack_size, needle, 5, base_offset);
 	case 6:
-		return Contains<uint32_t, ContainsUnaligned>(haystack, haystack_size, needle, 6, base_offset);
+		return Contains<uint32_t, ContainsOverlapping>(haystack, haystack_size, needle, 6, base_offset);
 	case 7:
-		return Contains<uint32_t, ContainsUnaligned>(haystack, haystack_size, needle, 7, base_offset);
+		return Contains<uint32_t, ContainsOverlapping>(haystack, haystack_size, needle, 7, base_offset);
 	case 8:
 		return Contains<uint64_t, ContainsAligned>(haystack, haystack_size, needle, 8, base_offset);
 	default:
+		if (needle_size <= 2 * sizeof(uint64_t)) {
+			return Contains<uint64_t, ContainsOverlapping>(haystack, haystack_size, needle, needle_size, base_offset);
+		}
 		return ContainsLong(haystack, haystack_size, needle, needle_size, base_offset);
 	}
 }
