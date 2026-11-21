@@ -19,7 +19,7 @@ jobs:
     name: Check release configuration
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate publisher and target matrix
         run: |
           python3 scripts/test_publish_engine.py
@@ -49,8 +49,8 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install test and build tools
@@ -85,7 +85,7 @@ jobs:
           python -m pytest -q tools/sqllogic/tests --unittest-binary build/release/test/unittest
       - name: Package and verify CLI and C SDK
         run: python scripts/package_engine.py build/release dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engine-${{ matrix.runner }}
           path: dist/*.tar.gz
@@ -108,10 +108,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check release recovery
         run: python3 scripts/test_publish_engine.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: engine-*
           merge-multiple: true

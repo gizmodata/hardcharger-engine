@@ -31,7 +31,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 256M
       FLAVOR: ${{ matrix.flavor }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Ninja on macOS
         if: runner.os == 'macOS'
         run: command -v ninja || brew install ninja
@@ -46,10 +46,11 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ./.github/actions/setup-msvc-env
         if: runner.os == 'Windows'
         with:
           arch: ${{ matrix.msvc }}
+          host_arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
       - name: Install static Windows OpenSSL
         if: runner.os == 'Windows'
         env:
@@ -97,7 +98,7 @@ jobs:
         with:
           mode: save
           target: sdk-${{ matrix.flavor }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engine-sdk-${{ matrix.flavor }}
           path: dist/hardcharger-engine-sdk-${{ matrix.flavor }}.tar.gz
