@@ -1,5 +1,6 @@
 self-hosted-runner:
   labels:
+    - hardcharger-engine-macos-15-xlarge
     - xcode-27
     - namespace-profile-linux-slim
     - namespace-profile-linux-slim;job.priority=1

@@ -39,7 +39,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-24.04"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15"]') }}
+        # The full gzip COPY regression can use more than 8 GiB of resident memory.
+        runner: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-24.04"]' || '["ubuntu-24.04","ubuntu-24.04-arm","hardcharger-engine-macos-15-xlarge"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 350
     env:
