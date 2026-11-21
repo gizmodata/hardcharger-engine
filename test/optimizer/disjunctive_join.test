@@ -1,0 +1,79 @@
+# name: test/optimizer/disjunctive_join.test
+# description: Split selective equalities in a disjunctive join beneath plain DISTINCT
+# group: [optimizer]
+
+statement ok
+CREATE TABLE people AS SELECT i::INT id, (i%4)::INT tenant, CASE WHEN i%4<>3 THEN i::INT END uid, CASE WHEN i%4<>3 THEN (10000+i)::INT END email FROM range(8192) t(i);
+
+statement ok
+CREATE TABLE logins AS SELECT i::INT id, (i%4)::INT tenant, CASE WHEN i%4 IN (0,1) THEN i::INT END uid, CASE WHEN i%4 IN (0,2) THEN (10000+i)::INT END email FROM range(8192) t(i);
+
+# Repeated build rows and overlapping predicates must both produce one DISTINCT result.
+statement ok
+INSERT INTO logins SELECT * FROM logins WHERE id%256=0;
+
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT p.id FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email);
+----
+physical_plan	<REGEX>:.*UNION.*
+
+query II
+SELECT count(*),sum(id) FROM (SELECT DISTINCT p.id FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email)) q;
+----
+6144	25159680
+
+# A bag result must preserve both repeated build rows and the multiplicity of each joined pair.
+query I
+SELECT count(*) FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email);
+----
+6176
+
+# DISTINCT ON may choose a particular representative. Its input stays intact.
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT ON (p.id) p.id, l.id FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email) ORDER BY p.id,l.id;
+----
+physical_plan	<!REGEX>:.*UNION.*
+
+# Duplicating a volatile projection would change the DISTINCT result.
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT random(),p.id FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email);
+----
+physical_plan	<!REGEX>:.*UNION.*
+
+# A highly selective common equality needs only one join.
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT p.id FROM people p JOIN logins l ON p.id=l.id AND (l.uid=p.uid OR p.email=l.email);
+----
+physical_plan	<!REGEX>:.*UNION.*
+
+# A single selective term cannot justify the second scan.
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT p.id FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.tenant=l.tenant);
+----
+physical_plan	<!REGEX>:.*UNION.*
+
+# A hidden sort column can select a representative using first() under DISTINCT.
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT p.id FROM people p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email) ORDER BY l.id;
+----
+physical_plan	<!REGEX>:.*UNION.*
+
+# A materialized CTE supplies the same rows to each branch.
+query II
+WITH shoppers AS MATERIALIZED (SELECT * FROM people) SELECT count(*),sum(id) FROM (SELECT DISTINCT p.id FROM shoppers p JOIN logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email)) q;
+----
+6144	25159680
+
+# Sampling and secure views are boundaries for this rule.
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT p.id FROM people p JOIN (SELECT * FROM logins USING SAMPLE 80%) l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email);
+----
+physical_plan	<!REGEX>:.*UNION.*
+
+statement ok
+CREATE SECURE VIEW visible_logins AS SELECT * FROM logins WHERE id%2=0;
+
+query II
+EXPLAIN (FORMAT compact) SELECT DISTINCT p.id FROM people p JOIN visible_logins l ON p.tenant=l.tenant AND (l.uid=p.uid OR p.email=l.email);
+----
+physical_plan	<!REGEX>:.*UNION.*
