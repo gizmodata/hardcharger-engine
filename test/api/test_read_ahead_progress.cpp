@@ -139,10 +139,9 @@ TEST_CASE("Automatic read-ahead grows its backlog within the memory budget", "[a
 		REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::ACQUIRED);
 		REQUIRE(job->batch_index == consumed);
 		if (consumed == 0) {
-			// One producer must fill a bounded backlog before the first job is consumed.
-			REQUIRE(produced < job_count);
+			// The first claim leaves a second job available for overlap if the budget permits it.
 			if (expect_overlap) {
-				REQUIRE(produced > 1);
+				REQUIRE(produced == 2);
 			} else {
 				REQUIRE(produced == 1);
 			}

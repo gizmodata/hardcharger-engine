@@ -262,8 +262,17 @@ ScanReadAheadAcquire ScanReadAhead::AcquireJob(ClientContext &context, TableFunc
 	optional<std::chrono::steady_clock::time_point> yield_deadline;
 	while (true) {
 		const auto epoch = ProgressEpoch();
-		// keep the queue full before claiming
+		// Start decoding the first job once a second job has been scheduled alongside it.
+		// A short scan can finish before filling the automatic backlog (which may wait for later files to open).
+		// Subsequent claims and explicit depths still fill the available queue.
+		idx_t produced = 0;
 		while (TryProduceJob(claim_and_schedule)) {
+			if (memory_governor && ++produced == 2) {
+				lock_guard<mutex> guard(lock);
+				if (!ready_queue.empty() && ready_queue.front()->batch_index == 0) {
+					break;
+				}
+			}
 		}
 		job = ClaimJob();
 		if (!job && IsDone() && !HasActiveProducers()) {
