@@ -50,21 +50,26 @@ runs:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ env.ENGINE_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: ${{ env.ENGINE_CACHE_KEY }}-
-    - name: Mark start of compilation
+    - name: Record restored objects and start the cache server
       if: inputs.mode == 'restore'
       shell: bash
       env:
         TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
-        touch "$RUNNER_TEMP/engine-cache-start"
+        # A cache hit touches the object. Compare filenames so a fully warm build
+        # does not upload a duplicate archive or consume another cache entry.
+        find "$SCCACHE_DIR" -type f | LC_ALL=C sort > "$RUNNER_TEMP/engine-cache-before"
         if [[ "$TOOLCHAIN" != *sha256:* ]]; then sccache --start-server; fi
     - name: Check for new objects
       id: objects
       if: inputs.mode == 'save'
       shell: bash
       run: |
-        if [[ -f "$RUNNER_TEMP/engine-cache-start" ]]; then sccache --stop-server || true; fi
-        if [[ -f "$RUNNER_TEMP/engine-cache-start" && -n "$(find "$SCCACHE_DIR" -type f -newer "$RUNNER_TEMP/engine-cache-start" -print -quit)" ]]; then
+        before="$RUNNER_TEMP/engine-cache-before"
+        if [[ ! -f "$before" ]]; then exit 0; fi
+        sccache --stop-server || true
+        find "$SCCACHE_DIR" -type f | LC_ALL=C sort > "$RUNNER_TEMP/engine-cache-after"
+        if [[ -n "$(LC_ALL=C comm -13 "$before" "$RUNNER_TEMP/engine-cache-after")" ]]; then
           echo "changed=true" >> "$GITHUB_OUTPUT"
         fi
     - uses: actions/cache/save@v6
