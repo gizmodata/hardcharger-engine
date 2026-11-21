@@ -22,7 +22,7 @@ class TestPublishEngine(unittest.TestCase):
         for platform in publish_engine.SDK_PLATFORMS:
             name = f"hardcharger-engine-sdk-{platform}.tar.gz"
             (self.directory / name).write_text(name)
-        self.commit = None
+        self.commit = self.sha
         self.release = None
         self.commands = []
         self.fail_upload_after = None
@@ -37,11 +37,7 @@ class TestPublishEngine(unittest.TestCase):
 
     def command(self, *args):
         self.commands.append(args)
-        if args[0] == "api":
-            self.assertIn(f"ref=refs/tags/{self.tag}", args)
-            self.assertIn(f"sha={self.sha}", args)
-            self.commit = self.sha
-        elif args[1] == "create":
+        if args[1] == "create":
             self.assertIn("--draft", args)
             self.assertIn("--verify-tag", args)
             self.release = {"isDraft": True, "assets": []}
@@ -104,7 +100,13 @@ class TestPublishEngine(unittest.TestCase):
         self.assertEqual(1, len(upload[upload.index("--clobber") + 1:]))
         self.assertFalse(self.release["isDraft"])
 
-    def test_all_archives_required_before_creating_tag(self):
+    def test_missing_tag_cannot_create_release(self):
+        self.commit = None
+        with self.assertRaisesRegex(ValueError, "must already exist"):
+            self.publish()
+        self.assertEqual([], self.commands)
+
+    def test_all_archives_required_before_creating_release(self):
         next(self.directory.iterdir()).unlink()
         with self.assertRaisesRegex(ValueError, "Missing archive"):
             self.publish()

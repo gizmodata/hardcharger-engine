@@ -20,7 +20,7 @@ These seven changes were previously applied by Hardcharger’s CMake scripts dur
 
 | Change | Effect | Implementation |
 |---|---|---|
-| Query progress sampling | The engine waits for the configured progress delay and samples at most once per 100 ms during execution. This reduces the time workers spend computing estimates on queries with many pipelines. | [Progress bar](../src/common/progress_bar/progress_bar.cpp) |
+| Query progress sampling | Hardcharger waits for the configured delay before sampling. Standalone DuckDB can report the first positive estimate immediately. Subsequent estimates are sampled at most once per 100 ms. This reduces the time workers spend computing estimates on queries with many pipelines. | [Progress bar](../src/common/progress_bar/progress_bar.cpp) |
 | Arrow export of 128-bit integers | When exporting HUGEINT or UHUGEINT as Arrow decimal128(38,0), a value outside the 38-digit range raises a conversion error. Values in range keep their exact value. DuckDB’s lossless Arrow extension types retain the full integer range. | [Arrow appender](../src/common/arrow/arrow_appender.cpp) |
 | Transaction cleanup after binding | When a transaction recorded as read-only reaches commit with changes made during binding, the engine reports a transaction error and runs rollback and cleanup. Other connections can continue using the database. | [Transaction manager](../src/transaction/duck_transaction_manager.cpp) |
 | View binding and owner privileges | An optional binder hook identifies the part of a query plan produced by a view. Hardcharger uses it to check the view’s reads under its owner’s privileges. | [View binding](../src/planner/binder/tableref/bind_basetableref.cpp) |

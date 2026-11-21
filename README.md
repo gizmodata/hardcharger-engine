@@ -49,6 +49,10 @@ make release
 make allunit
 ```
 
+Pull requests run a Linux build and smoke tests. Pushes to main check the release configuration. A manual run validates all three native platforms. To release, push a `vX.Y.Z` tag on the reviewed commit. Only that tag run can publish, after all engine tests and all integration SDK builds succeed.
+
+Native tests and integration SDK builds use sccache. Each target has a 256 MB compiler cache scoped to its toolchain. CI saves new objects after compilation so a test failure can still leave a reusable cache for a retry.
+
 Engine release CI runs DuckDB’s full registered test suite, including slow cases and the optimizer and execution regressions added by GizmoData. The release workflow also tests the CLI and SQL logic test tools before it publishes binaries. [Test suite](test) · [Release workflow](.github/workflows/engine.yml)
 
 ## Acknowledgments

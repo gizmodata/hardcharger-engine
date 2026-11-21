@@ -1,0 +1,74 @@
+name: Engine compiler cache
+description: Reuse compiled C and C++ objects for one target and toolchain.
+inputs:
+  mode:
+    description: restore or save
+    required: true
+  target:
+    description: Native test build or SDK flavor
+    required: true
+  toolchain:
+    description: Additional identity such as a pinned container digest or NDK
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: mozilla-actions/sccache-action@v0.0.11
+      if: inputs.mode == 'restore'
+      with:
+        version: 'v0.19.0'
+    - name: Identify compiler and target
+      if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        CACHE_TARGET: ${{ inputs.target }}
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        set -euo pipefail
+        fingerprint=$(
+          {
+            echo "$CACHE_TARGET $TOOLCHAIN $RUNNER_OS $RUNNER_ARCH"
+            sccache --version
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              echo "$VCToolsVersion"
+            elif [[ "$RUNNER_OS" == macOS ]]; then
+              xcodebuild -version
+              clang --version
+            elif [[ "$TOOLCHAIN" != *sha256:* ]]; then
+              clang --version
+              gcc --version
+            fi
+          } | git hash-object --stdin
+        )
+        echo "ENGINE_CACHE_KEY=engine-objects-v1-$CACHE_TARGET-$fingerprint" >> "$GITHUB_ENV"
+        echo "CMAKE_C_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
+        echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
+        mkdir -p "$SCCACHE_DIR"
+    - uses: actions/cache/restore@v6
+      if: inputs.mode == 'restore'
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ env.ENGINE_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ env.ENGINE_CACHE_KEY }}-
+    - name: Mark start of compilation
+      if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        touch "$RUNNER_TEMP/engine-cache-start"
+        if [[ "$TOOLCHAIN" != *sha256:* ]]; then sccache --start-server; fi
+    - name: Check for new objects
+      id: objects
+      if: inputs.mode == 'save'
+      shell: bash
+      run: |
+        if [[ -f "$RUNNER_TEMP/engine-cache-start" ]]; then sccache --stop-server || true; fi
+        if [[ -f "$RUNNER_TEMP/engine-cache-start" && -n "$(find "$SCCACHE_DIR" -type f -newer "$RUNNER_TEMP/engine-cache-start" -print -quit)" ]]; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+    - uses: actions/cache/save@v6
+      if: inputs.mode == 'save' && steps.objects.outputs.changed == 'true'
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ env.ENGINE_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}

@@ -86,12 +86,11 @@ def publish(repo, tag, sha, directory):
         raise ValueError(f"Invalid commit {sha}")
     expected = release_files(directory)
     current = tag_commit(repo, tag)
-    release = release_state(repo, tag)
-    if current is None and (release is None or release["isDraft"]):
-        gh("api", "--method", "POST", f"repos/{repo}/git/refs", "-f", f"ref=refs/tags/{tag}", "-f", f"sha={sha}")
-        current = tag_commit(repo, tag)
+    if current is None:
+        raise ValueError(f"Tag {tag} must already exist")
     if current != sha:
         raise ValueError(f"{tag} points to {current}, expected tested commit {sha}")
+    release = release_state(repo, tag)
     if release is None:
         notes = (
             "CLI and C SDK builds for Linux and Apple Silicon, plus Hardcharger integration SDKs for Linux, macOS, iOS, Android and Windows. "

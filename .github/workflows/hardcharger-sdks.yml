@@ -27,6 +27,8 @@ jobs:
       run:
         shell: bash
     env:
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 256M
       FLAVOR: ${{ matrix.flavor }}
     steps:
       - uses: actions/checkout@v4
@@ -62,19 +64,39 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ninja-build clang flex bison libssl-dev
           if [[ "$FLAVOR" == linux-arm64-tsan ]]; then sudo sysctl -w vm.mmap_rnd_bits=28; fi
+      - uses: ./.github/actions/compiler-cache
+        with:
+          mode: restore
+          target: sdk-${{ matrix.flavor }}
+          toolchain: ${{ matrix.image || (startsWith(matrix.flavor, 'android-') && 'ndk28.2.13676358') || '' }}
       - name: Build portable Linux SDK
         if: matrix.image != ''
         env:
           IMAGE: ${{ matrix.image }}
         run: |
-          docker run --rm -v "$PWD:$PWD" -w "$PWD" -e FLAVOR "$IMAGE" bash -euc '
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" \
+            -v "$(command -v sccache):/usr/local/bin/sccache:ro" \
+            -e FLAVOR -e SCCACHE_DIR -e SCCACHE_CACHE_SIZE \
+            -e CMAKE_C_COMPILER_LAUNCHER -e CMAKE_CXX_COMPILER_LAUNCHER \
+            -e OWNER="$(id -u):$(id -g)" "$IMAGE" bash -euc '
             git config --global --add safe.directory "*"
-            dnf install -y -q --setopt=retries=8 ninja-build perl-IPC-Cmd perl-Pod-Html perl-Time-Piece flex bison
             export PATH="/opt/python/cp312-cp312/bin:$PATH"
-            tools/hardcharger-sdk/build.sh "$FLAVOR"'
+            dnf install -y -q --setopt=retries=10 perl-IPC-Cmd perl-Pod-Html perl-Time-Piece flex bison
+            if ! command -v ninja >/dev/null; then python -m pip install --quiet --retries 10 ninja; fi
+            sccache --start-server
+            rc=0
+            tools/hardcharger-sdk/build.sh "$FLAVOR" || rc=$?
+            sccache --stop-server
+            chown -R "$OWNER" "$SCCACHE_DIR"
+            exit "$rc"'
       - name: Build native or cross-compiled SDK
         if: "!matrix.image"
         run: tools/hardcharger-sdk/build.sh "$FLAVOR"
+      - uses: ./.github/actions/compiler-cache
+        if: "!cancelled()"
+        with:
+          mode: save
+          target: sdk-${{ matrix.flavor }}
       - uses: actions/upload-artifact@v4
         with:
           name: engine-sdk-${{ matrix.flavor }}
