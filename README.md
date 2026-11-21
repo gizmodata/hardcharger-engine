@@ -15,7 +15,7 @@ Hardcharger Engine is GizmoData’s performance-tuned fork of DuckDB for analyti
 
 ## Why we forked
 
-DB Olympics Q318 exposed a join where the engine spent most of its time checking candidate pairs it could rule out with a more selective hash key. Fixing that plan required a change inside DuckDB’s optimizer. Maintaining a fork lets us ship and test that change on Hardcharger’s release schedule, alongside a small set of scan and string optimizations. The [differences from DuckDB 2.0.1](docs/optimizations.md) describe the rules, their limits, and what we measured on other queries.
+DB Olympics Q318 exposed a join where the engine spent most of its time checking candidate pairs it could rule out with a more selective hash key. Fixing that plan required a change inside DuckDB’s optimizer. Maintaining a fork lets us ship and test that change on Hardcharger’s release schedule, alongside a small set of scan and string optimizations. The [differences from DuckDB 2.0.1](docs/optimizations.md) describe the rules, their limits, and what we measured on other queries. The same document covers the [seven engine changes used by the Hardcharger server](docs/optimizations.md#engine-changes-used-by-the-hardcharger-server).
 
 ## Run the engine
 

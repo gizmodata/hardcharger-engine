@@ -1,6 +1,6 @@
 # Differences from DuckDB 2.0.1
 
-Hardcharger Engine v2.0.1 starts from upstream commit `8d78114e90a53823803660bf821f6073ac87da8c`. The engine changes end at `aef3086626218f878d821f7936e3c20cc4940b12`. Subsequent release work covers documentation, packaging, and CI. The 14 engine commits touch 19 files. The public C headers, SQL syntax, and database file format are unchanged by this patch set. [Upstream source](https://github.com/duckdb/duckdb/tree/8d78114e90a53823803660bf821f6073ac87da8c) · [Complete engine diff](https://github.com/gizmodata/hardcharger-engine/compare/8d78114e90a53823803660bf821f6073ac87da8c...aef3086626218f878d821f7936e3c20cc4940b12)
+Hardcharger Engine v2.0.1 starts from upstream commit `8d78114e90a53823803660bf821f6073ac87da8c`. The initial performance changes end at `aef3086626218f878d821f7936e3c20cc4940b12`. These 14 performance commits touch 19 files. The engine also includes the seven integrations below. The public C headers, SQL syntax, and database file format are unchanged by this patch set. [Upstream source](https://github.com/duckdb/duckdb/tree/8d78114e90a53823803660bf821f6073ac87da8c) · [Performance diff](https://github.com/gizmodata/hardcharger-engine/compare/8d78114e90a53823803660bf821f6073ac87da8c...aef3086626218f878d821f7936e3c20cc4940b12)
 
 ## What changed
 
@@ -13,6 +13,20 @@ Hardcharger Engine v2.0.1 starts from upstream commit `8d78114e90a53823803660bf8
 | Automatic read-ahead | The first decoder can start after its successor is scheduled, before the entire speculative queue fills. Explicitly configured read-ahead depth keeps its existing behavior. | [Scheduler](../src/parallel/scan_read_ahead.cpp) · [Read-ahead tests](../test/api/test_read_ahead_progress.cpp) |
 | Substring search | Short searches reuse the first candidate position. Medium-length comparisons use two bounded word loads, avoiding redundant comparisons while respecting input boundaries. | [Substring search](../src/function/scalar/string/contains.cpp) · [Boundary tests](../test/sql/function/string/test_contains_candidate_bounds.test) |
 | Regular expression extraction | The executor samples for adjacent equal inputs before caching a prior capture. Eligible patterns can stop after the requested captures when the remaining suffix is an unrestricted wildcard. | [Regex execution](../src/function/scalar/string/regexp.cpp) · [Adjacent inputs](../test/sql/function/string/regex_extract_adjacent.test) · [Suffix tests](../test/sql/function/string/regex_extract_unrestricted_suffix.test) |
+
+## Engine changes used by the Hardcharger server
+
+These seven changes were previously applied by Hardcharger’s CMake scripts during each source build. They now live in the engine source. The server still makes authorization decisions. Engine hooks give it the binding context those decisions require. [Integration commit](https://github.com/gizmodata/hardcharger-engine/commit/a90a7094e51)
+
+| Change | Effect | Implementation |
+|---|---|---|
+| Query progress sampling | The engine waits for the configured progress delay and samples at most once per 100 ms during execution. This reduces the time workers spend computing estimates on queries with many pipelines. | [Progress bar](../src/common/progress_bar/progress_bar.cpp) |
+| Arrow export of 128-bit integers | When exporting HUGEINT or UHUGEINT as Arrow decimal128(38,0), a value outside the 38-digit range raises a conversion error. Values in range keep their exact value. DuckDB’s lossless Arrow extension types retain the full integer range. | [Arrow appender](../src/common/arrow/arrow_appender.cpp) |
+| Transaction cleanup after binding | When a transaction recorded as read-only reaches commit with changes made during binding, the engine reports a transaction error and runs rollback and cleanup. Other connections can continue using the database. | [Transaction manager](../src/transaction/duck_transaction_manager.cpp) |
+| View binding and owner privileges | An optional binder hook identifies the part of a query plan produced by a view. Hardcharger uses it to check the view’s reads under its owner’s privileges. | [View binding](../src/planner/binder/tableref/bind_basetableref.cpp) |
+| Name resolution in stored expressions | The binder carries the defining object’s scope into function and type resolution for stored expressions. Hardcharger uses this context for views, defaults, constraints, generated columns, triggers and policies. | [Catalog lookup](../src/catalog/catalog.cpp) · [Binder](../src/planner/binder.cpp) |
+| Read-only execution | Persistent sequence changes are registered as writes. An optional hook lets Hardcharger apply its read-only policy when binding a table function. | [Sequences](../src/catalog/catalog_entry/sequence_catalog_entry.cpp) · [Table function binding](../src/planner/binder/tableref/bind_table_function.cpp) |
+| Extension repository opt-in | Hardcharger requires an administrator’s explicit decision before trusting a new repository, including a repository named by its host. Existing trusted repositories remain usable, and DuckDB continues to verify extension signatures. | [Repository policy](../src/main/extension/extension_repository_manager.cpp) |
 
 ## What we measured through Hardcharger
 
