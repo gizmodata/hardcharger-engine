@@ -11,7 +11,6 @@ Hardcharger Engine is GizmoData’s performance-tuned fork of DuckDB for analyti
 
 [![Engine CI](https://github.com/gizmodata/hardcharger-engine/actions/workflows/engine.yml/badge.svg)](https://github.com/gizmodata/hardcharger-engine/actions/workflows/engine.yml)
 [![Engine release](https://img.shields.io/github/v/release/gizmodata/hardcharger-engine?label=engine)](https://github.com/gizmodata/hardcharger-engine/releases)
-[![Upstream DuckDB 2.0.1](https://img.shields.io/badge/upstream-DuckDB%202.0.1-f4d03f)](https://github.com/duckdb/duckdb/releases/tag/v2.0.1)
 [![MIT license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Why we forked
@@ -39,4 +38,8 @@ make allunit
 
 Engine release CI runs DuckDB’s full registered test suite, including slow cases and the optimizer and execution regressions added by GizmoData. The release workflow also tests the CLI and SQL logic test tools before it publishes binaries. [Test suite](test) · [Release workflow](.github/workflows/engine.yml)
 
-DuckDB is developed by the DuckDB project. GizmoData maintains this fork and its releases under the MIT license. [Upstream source](https://github.com/duckdb/duckdb) · [License](LICENSE)
+## Acknowledgments
+
+We thank the DuckDB developers and contributors for the engine, SQL implementation, and test suite that Hardcharger Engine builds on. GizmoData independently maintains and publishes this fork. DuckDB is a trademark of the DuckDB Foundation. [DuckDB project](https://github.com/duckdb/duckdb) · [Trademark guidelines](https://duckdb.org/trademark_guidelines#attribution)
+
+The upstream code is copyright 2018–2026 Stichting DuckDB Foundation and is distributed under the [MIT license](LICENSE).
