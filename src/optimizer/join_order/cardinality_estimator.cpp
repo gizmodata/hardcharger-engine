@@ -1,4 +1,6 @@
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
+#include "duckdb/parser/expression_map.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
@@ -19,6 +21,8 @@ public:
 	idx_t GetReliableDistinctCount() const;
 	void Update(const DistinctCount &distinct_count);
 	void Restrict(idx_t bound);
+	//! Estimated number of distinct results of a non-injective join expression.
+	idx_t expression_domain = 0;
 
 private:
 	optional<DistinctCount> estimate;
@@ -28,15 +32,19 @@ DomainEstimate::DomainEstimate() {
 }
 
 idx_t DomainEstimate::GetDistinctCount() const {
+	if (expression_domain && (!estimate || expression_domain > estimate->distinct_count)) {
+		return expression_domain;
+	}
 	return estimate ? estimate->distinct_count : NumericLimits<idx_t>::Maximum();
 }
 
 bool DomainEstimate::HasReliableDistinctCount() const {
-	return estimate && (estimate->source == DistinctCountSource::HLL || estimate->source == DistinctCountSource::EXACT);
+	return estimate && estimate->distinct_count >= expression_domain &&
+	       (estimate->source == DistinctCountSource::HLL || estimate->source == DistinctCountSource::EXACT);
 }
 
 idx_t DomainEstimate::GetReliableDistinctCount() const {
-	if (!estimate || (estimate->source != DistinctCountSource::HLL && estimate->source != DistinctCountSource::EXACT)) {
+	if (!HasReliableDistinctCount()) {
 		throw InternalException("Attempted to access an unreliable distinct count");
 	}
 	return estimate->distinct_count;
@@ -895,10 +903,62 @@ bool SortTdoms(const RelationsSetToStats &a, const RelationsSetToStats &b) {
 	return a.domain_estimate.GetDistinctCount() > b.domain_estimate.GetDistinctCount();
 }
 
+// A non-injective cast does not belong to the source column's equality class. Use its
+// expression-domain estimate only for predicates on that cast. Other predicates retain the
+// column's original distinct count, including equality joins on the timestamp itself.
+static void ApplyDateCastDomains(const vector<unique_ptr<JoinOrderOperator>> &operators,
+                                 vector<RelationsSetToStats> &groups) {
+	expression_map_t<idx_t> domains;
+	auto remember = [&](const Expression &expr, const unique_ptr<BaseStatistics> &stats) {
+		if (stats && BoundCastExpression::IsCast(expr) && expr.GetReturnType().id() == LogicalTypeId::DATE &&
+		    stats->GetDistinctCount()) {
+			domains.emplace(expr, stats->GetDistinctCount());
+		}
+	};
+	for (auto &op : operators) {
+		if (op->type != JoinOrderOperatorType::INNER) {
+			continue;
+		}
+		for (const auto &condition : op->conditions) {
+			if (condition.IsComparison() && condition.GetComparisonType() == ExpressionType::COMPARE_EQUAL) {
+				remember(condition.GetLHS(), condition.GetLeftStats());
+				remember(condition.GetRHS(), condition.GetRightStats());
+			}
+		}
+	}
+	if (domains.empty()) {
+		return;
+	}
+	for (auto &group : groups) {
+		if (group.predicates.size() != 1) {
+			continue;
+		}
+		const auto &predicate = group.predicates[0].get();
+		const auto &filter = predicate.GetFilter();
+		if (predicate.IsEquivalencePredicate() || predicate.GetJoinType() != JoinType::INNER ||
+		    !filter.filter || filter.filter->GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
+			continue;
+		}
+		const auto &comparison = filter.filter->Cast<BoundFunctionExpression>();
+		auto update = [&](const Expression &expression, const ColumnBinding &binding) {
+			auto it = domains.find(expression);
+			if (it == domains.end()) {
+				return idx_t(0);
+			}
+			group.equivalent_relations.erase(binding);
+			return it->second;
+		};
+		auto left = update(BoundComparisonExpression::Left(comparison), predicate.GetStatsBinding(true));
+		auto right = update(BoundComparisonExpression::Right(comparison), predicate.GetStatsBinding(false));
+		group.domain_estimate.expression_domain = MaxValue(left, right);
+	}
+}
+
 void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
                                       const vector<unique_ptr<JoinOrderOperator>> &operators) {
 	D_ASSERT(state->leaf_cardinalities.empty());
 	InitEquivalentRelations();
+	ApplyDateCastDomains(operators, state->relation_set_stats);
 	for (idx_t i = 0; i < relations.size(); i++) {
 		auto &stats = relations[i];
 		D_ASSERT(stats.stats_initialized);

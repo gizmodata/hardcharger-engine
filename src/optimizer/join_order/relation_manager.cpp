@@ -1,6 +1,8 @@
 #include "duckdb/optimizer/join_order/relation_manager.hpp"
 
 #include "duckdb/common/enums/join_type.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/common/enums/logical_operator_type.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
@@ -147,6 +149,83 @@ bool RelationManager::TryNormalizeBinding(ColumnBinding binding, ColumnBinding &
 	}
 	normalized = entry->second;
 	return true;
+}
+
+// Distinct timestamps can all fall on the same date. Native scan min/max values
+// bound the number of days between the first and last timestamp (inclusive).
+static unique_ptr<BaseStatistics>
+EstimateDateCastStats(ClientContext &context, const RelationManager &manager,
+                      const vector<unique_ptr<SingleJoinRelation>> &relations, const Expression &expr) {
+	if (!BoundCastExpression::IsCast(expr) ||
+	    expr.GetReturnType().id() != LogicalTypeId::DATE) {
+		return nullptr;
+	}
+	const auto &cast = expr.Cast<BoundFunctionExpression>();
+	const auto &child = BoundCastExpression::Child(cast);
+	switch (child.GetReturnType().id()) {
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+		break;
+	default:
+		return nullptr;
+	}
+	if (child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		return nullptr;
+	}
+	auto binding = child.Cast<BoundColumnRefExpression>().Binding();
+	ColumnBinding normalized;
+	if (!manager.TryNormalizeBinding(binding, normalized)) {
+		return nullptr;
+	}
+	const auto &relation = *relations[normalized.table_index.index];
+	if (!normalized.column_index.IsValid() || normalized.column_index.GetIndex() >= relation.stats.columns.size()) {
+		return nullptr;
+	}
+	auto raw_count = relation.stats.columns[normalized.column_index.GetIndex()].total_domain.distinct_count;
+	if (raw_count <= 1) {
+		return nullptr;
+	}
+	auto op = &relation.op;
+	while (op->type == LogicalOperatorType::LOGICAL_FILTER) {
+		op = op->children[0].get();
+	}
+	if (op->type != LogicalOperatorType::LOGICAL_GET) {
+		return nullptr;
+	}
+	auto &scan = op->Cast<LogicalGet>();
+	if (binding.table_index != scan.table_index || binding.column_index.GetIndex() >= scan.GetColumnIds().size() ||
+	    scan.function.GetName() != "seq_scan" || !scan.bind_data || !scan.function.statistics_extended ||
+	    scan.at_clause || scan.extra_info.sample_options || !scan.GetTable() || !scan.GetTable()->TryGetDuckTableEntry()) {
+		return nullptr;
+	}
+	const auto &column = scan.GetColumnIndex(binding);
+	if (!column.HasPrimaryIndex() || column.HasChildren() || column.IsVirtualColumn()) {
+		return nullptr;
+	}
+	TableFunctionGetStatisticsInput input(scan.bind_data.get(), column);
+	auto stats = scan.function.statistics_extended(context, input);
+	if (!stats || !NumericStats::HasMinMax(*stats)) {
+		return nullptr;
+	}
+	auto min_date = NumericStats::Min(*stats).DefaultTryCastAs(LogicalType::DATE);
+	auto max_date = NumericStats::Max(*stats).DefaultTryCastAs(LogicalType::DATE);
+	if (!min_date || !max_date || min_date->IsNull() || max_date->IsNull()) {
+		return nullptr;
+	}
+	auto first = min_date->GetValue<date_t>();
+	auto last = max_date->GetValue<date_t>();
+	if (!first.IsFinite() || !last.IsFinite() || first.days > last.days) {
+		return nullptr;
+	}
+	auto days = idx_t(int64_t(last.days) - int64_t(first.days)) + 1;
+	if (days >= raw_count) {
+		return nullptr;
+	}
+	auto result = BaseStatistics::CreateUnknown(LogicalType::DATE).ToUnique();
+	result->SetDistinctCount(days);
+	return result;
 }
 
 static bool OperatorNeedsRelation(LogicalOperatorType op_type) {
@@ -995,7 +1074,17 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 			}
 			default: {
 				for (auto &cond : join.conditions) {
-					operator_conditions[f_op].push_back(cond.Copy());
+					auto copy = cond.Copy();
+					if (join.join_type == JoinType::INNER && copy.IsComparison() &&
+					    copy.GetComparisonType() == ExpressionType::COMPARE_EQUAL) {
+						if (!copy.GetLeftStats()) {
+							copy.SetLeftStats(EstimateDateCastStats(context, *this, relations, copy.GetLHS()));
+						}
+						if (!copy.GetRightStats()) {
+							copy.SetRightStats(EstimateDateCastStats(context, *this, relations, copy.GetRHS()));
+						}
+					}
+					operator_conditions[f_op].push_back(std::move(copy));
 				}
 				// can extract every inner join condition individually.
 				for (auto &cond : join.conditions) {

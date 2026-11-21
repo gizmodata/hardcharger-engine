@@ -1,0 +1,86 @@
+# name: test/optimizer/statistics/timestamp_date_join_domain.test
+# description: Distinct timestamp values can share a date in equality-join cardinality estimates
+# group: [statistics]
+
+statement ok
+CREATE TABLE moments AS SELECT TIMESTAMP '2025-01-01' + (i%2)::INT*INTERVAL '1 day' + i*INTERVAL '1 second' AS ts FROM range(8192) t(i);
+
+statement ok
+CREATE TABLE dates AS SELECT DATE '2025-01-01'+i::INT AS d FROM range(2) t(i);
+
+# 8192 distinct timestamps, distributed evenly across two dates.
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM moments m JOIN dates d ON m.ts::DATE=d.d;
+----
+physical_plan	<REGEX>:.*HASH_JOIN \(est=8192\).*
+
+query I
+SELECT count(*) FROM moments m JOIN dates d ON d.d=m.ts::DATE;
+----
+8192
+
+# One matching date in a hundred-day fact table. The dimension alone cannot determine selectivity.
+statement ok
+CREATE TABLE wider AS SELECT TIMESTAMP '2025-01-01' + (i%100)::INT*INTERVAL '1 day' + i*INTERVAL '1 second' AS ts FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE singledate AS SELECT DATE '2025-01-23' AS d;
+
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM wider m JOIN singledate d ON m.ts::DATE=d.d;
+----
+physical_plan	<REGEX>:.*HASH_JOIN \(est=100\).*
+
+query I
+SELECT count(*) FROM wider m JOIN singledate d ON m.ts::DATE=d.d;
+----
+100
+
+# Both endpoints may have derived domains.
+statement ok
+CREATE TABLE another AS SELECT TIMESTAMP '2025-01-01' + (i%2)::INT*INTERVAL '1 day' + i*INTERVAL '1 minute' AS ts FROM range(144) t(i);
+
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM moments m JOIN another a ON m.ts::DATE=a.ts::DATE;
+----
+physical_plan	<REGEX>:.*HASH_JOIN \(est=589824\).*
+
+query I
+SELECT count(*) FROM moments m JOIN another a ON m.ts::DATE=a.ts::DATE;
+----
+589824
+
+# The cast's estimate belongs to that predicate, independently of an equality on the raw timestamp.
+query I
+SELECT count(*) FROM moments m JOIN moments n ON m.ts=n.ts JOIN dates d ON m.ts::DATE=d.d;
+----
+8192
+
+# Empty, all-NULL and non-finite endpoints offer no finite date range.
+statement ok
+CREATE TABLE special(ts TIMESTAMP);
+
+query I
+SELECT count(*) FROM special s JOIN dates d ON s.ts::DATE=d.d;
+----
+0
+
+statement ok
+INSERT INTO special VALUES (NULL), (TIMESTAMP '-infinity'), (TIMESTAMP 'infinity'), (TIMESTAMP '2025-01-01');
+
+query I
+SELECT count(*) FROM special s JOIN dates d ON s.ts::DATE=d.d;
+----
+1
+
+# Timezone-free timestamp precisions all use the inclusive UTC-date span, including before the epoch.
+statement ok
+CREATE TABLE precisions AS SELECT ts::TIMESTAMP_S AS secs,ts::TIMESTAMP_MS AS millis,ts::TIMESTAMP_NS AS nanos FROM (SELECT TIMESTAMP '1969-12-31 23:59:00'+i*INTERVAL '1 second' ts FROM range(120) v(i));
+
+statement ok
+CREATE TABLE unix_dates AS SELECT * FROM (VALUES (DATE '1969-12-31'),(DATE '1970-01-01')) t(d);
+
+query III
+SELECT (SELECT count(*) FROM precisions p JOIN unix_dates d ON p.secs::DATE=d.d),(SELECT count(*) FROM precisions p JOIN unix_dates d ON p.millis::DATE=d.d),(SELECT count(*) FROM precisions p JOIN unix_dates d ON p.nanos::DATE=d.d);
+----
+120	120	120
