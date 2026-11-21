@@ -32,4 +32,5 @@ for raw in sys.stdin.buffer.read().split(b"\0"):
         target = dest / src
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, target)' "$prefix/share/hardcharger-engine/notices")
-tar -czf "$dest/hardcharger-engine-sdk-$flavor.tar.gz" -C "$prefix" .
+# GNU tar treats a Windows drive letter in the archive name as a remote host.
+tar -czf - -C "$prefix" . > "$dest/hardcharger-engine-sdk-$flavor.tar.gz"
