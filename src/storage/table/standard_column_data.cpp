@@ -84,10 +84,9 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto validity_compression = validity->GetCompressionFunction();
 	bool validity_has_filter = filter_includes_validity || (validity_compression && validity_compression->filter);
 	auto target_count = GetVectorCount(vector_index);
-	auto scan_type = GetVectorScanType(state, target_count, result);
-	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
+	if (!has_filter || !validity_has_filter || verify_fetch_row || filter_state.can_throw ||
+	    GetVectorScanType(state, target_count, result) != ScanVectorType::SCAN_ENTIRE_VECTOR) {
 		// we are not scanning an entire vector - this can have several causes (updates, etc)
 		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
 		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
@@ -111,15 +110,20 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 	bool has_select = compression && compression->select;
 	auto validity_compression = validity->GetCompressionFunction();
 	bool validity_has_select = validity_compression && validity_compression->select;
-	auto target_count = GetVectorCount(vector_index);
-	auto scan_type = GetVectorScanType(state, target_count, result);
-	if (!has_select || !validity_has_select || HasUpdates() || validity->HasUpdates()) {
-		// the updates need to be merged into the entire vector, so we cannot select
-		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
-		return;
+	if (has_select && validity_has_select) {
+		auto target_count = GetVectorCount(vector_index);
+		auto scan_type = GetVectorScanType(state, target_count, result);
+		// For flat output the entire-vector decision already checked both update segments.
+		const bool checked_no_updates =
+		    result.GetVectorType() == VectorType::FLAT_VECTOR && scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
+		if (checked_no_updates || (!HasUpdates() && !validity->HasUpdates())) {
+			SelectVector(state, result, target_count, sel, sel_count, scan_type);
+			validity->SelectVector(state.child_states[0], result, target_count, sel, sel_count, scan_type);
+			return;
+		}
 	}
-	SelectVector(state, result, target_count, sel, sel_count, scan_type);
-	validity->SelectVector(state.child_states[0], result, target_count, sel, sel_count, scan_type);
+	// Merge updates on the full vector before selecting.
+	ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 }
 
 void StandardColumnData::InitializeAppend(ColumnAppendState &state) {
