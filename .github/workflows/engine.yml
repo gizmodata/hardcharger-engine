@@ -19,7 +19,7 @@ jobs:
     name: Check release configuration
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate publisher and target matrix
         run: |
           python3 scripts/test_publish_engine.py
@@ -48,7 +48,7 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -107,7 +107,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check release recovery
         run: python3 scripts/test_publish_engine.py
       - uses: actions/download-artifact@v4

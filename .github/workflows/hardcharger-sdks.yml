@@ -31,7 +31,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 256M
       FLAVOR: ${{ matrix.flavor }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Ninja on macOS
         if: runner.os == 'macOS'
         run: command -v ninja || brew install ninja
