@@ -36,7 +36,7 @@ jobs:
         run: |
           cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DDUCKDB_EXPLICIT_VERSION=v2.0.1 -DBUILD_UNITTESTS=ON \
-            '-DBUILD_EXTENSIONS=tpch;tpcds;autocomplete'
+            "-DDUCKDB_EXTENSION_CONFIGS=$PWD/.github/config/bundled_extensions.cmake"
       - name: Build engine and tests
         run: cmake --build build/release --parallel 3
       - name: Hardcharger Engine regression cases
