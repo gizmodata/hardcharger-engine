@@ -1,4 +1,4 @@
-#include "duckdb/optimizer/disjunctive_join.hpp"
+#include "disjunctive_join.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
