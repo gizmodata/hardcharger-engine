@@ -73,14 +73,11 @@ void ProgressBar::Start() {
 	profiler.Start();
 	query_progress.Initialize();
 	supported = true;
-	// The standalone progress API exposes a first estimate during streaming. A server may defer all
-	// pipeline walks until the display delay to avoid work on short queries.
-	const auto &config = DBConfig::GetConfig(executor.context);
-	waiting_for_first_progress = !config.IsStartupFlagEnabled(DBConfig::DELAY_QUERY_PROGRESS);
+	throttle_progress = DBConfig::GetConfig(executor.context).IsStartupFlagEnabled(DBConfig::DELAY_QUERY_PROGRESS);
 	next_update_ms =
-	    waiting_for_first_progress
-	        ? 0
-	        : static_cast<uint32_t>(MinValue<idx_t>(show_progress_after, NumericLimits<uint32_t>::Maximum()));
+	    throttle_progress
+	        ? static_cast<uint32_t>(MinValue<idx_t>(show_progress_after, NumericLimits<uint32_t>::Maximum()))
+	        : 0;
 }
 
 bool ProgressBar::PrintEnabled() const {
@@ -118,16 +115,20 @@ void ProgressBar::Update(bool final) {
 		return;
 	}
 
-	// Hardcharger: computing the estimate walks every pipeline under the executor's lock, which
-	// the worker threads need too; done after every task it stalled plans with many pipelines.
-	// Sample at most every 100 ms after the first measurable work (or immediately after the host delay).
+	// The server can defer pipeline walks until progress_bar_time and then sample at most once
+	// per 100 ms. Standalone clients may inspect progress between any two tasks.
 	static constexpr double UPDATE_INTERVAL_MS = 100;
-	const double elapsed_ms = profiler.Elapsed() * 1000.0;
+	const double elapsed_ms = throttle_progress ? profiler.Elapsed() * 1000.0 : 0.0;
 	if (elapsed_ms < static_cast<double>(next_update_ms)) {
 		if (!final) {
 			return;
 		}
 	} else {
+		if (throttle_progress) {
+			next_update_ms = static_cast<uint32_t>(MinValue<double>(
+			    elapsed_ms + UPDATE_INTERVAL_MS, static_cast<double>(NumericLimits<uint32_t>::Maximum())));
+		}
+
 		ProgressData progress;
 		idx_t invalid_pipelines = executor.GetPipelinesProgress(progress);
 
@@ -139,16 +140,6 @@ void ProgressBar::Update(bool final) {
 			query_progress.rows_processed = idx_t(progress.done);
 			query_progress.total_rows_to_process = idx_t(progress.total);
 			new_percentage = progress.ProgressDone() * 100;
-		}
-
-		// Streaming and pending-query clients can inspect an unfinished query between two consecutive tasks.
-		// Give them its first measurable work before rate-limiting further samples.
-		if (new_percentage > 0) {
-			waiting_for_first_progress = false;
-		}
-		if (!waiting_for_first_progress) {
-			next_update_ms = static_cast<uint32_t>(MinValue<double>(
-			    elapsed_ms + UPDATE_INTERVAL_MS, static_cast<double>(NumericLimits<uint32_t>::Maximum())));
 		}
 
 		if (!final && invalid_pipelines > 0) {

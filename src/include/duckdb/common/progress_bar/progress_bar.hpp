@@ -71,8 +71,8 @@ private:
 	bool supported = true;
 	//! Whether the bar has already finished
 	bool finished = false;
-	//! A standalone caller can read progress immediately after a single streaming task.
-	bool waiting_for_first_progress = false;
+	//! The embedder opted into delayed, rate-limited progress estimates.
+	bool throttle_progress = false;
 	//! Elapsed query time in milliseconds at which Update may next sample the pipelines.
 	uint32_t next_update_ms = 0;
 };
