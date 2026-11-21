@@ -98,7 +98,7 @@ def publish(repo, tag, sha, directory):
             "for the upstream baseline and measured results."
         )
         gh("release", "create", tag, "--repo", repo, "--verify-tag", "--draft",
-           "--target", sha, "--title", f"Hardcharger Engine {tag}", "--notes", notes)
+           "--title", f"Hardcharger Engine {tag}", "--notes", notes)
         release = release_state(repo, tag)
     pending = pending_files(release, expected)
     if not release["isDraft"]:
