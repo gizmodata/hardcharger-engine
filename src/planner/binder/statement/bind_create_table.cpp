@@ -94,6 +94,8 @@ vector<unique_ptr<BoundConstraint>> Binder::BindConstraints(ClientContext &conte
 }
 
 vector<unique_ptr<BoundConstraint>> Binder::BindConstraints(const TableCatalogEntry &table) {
+	// Hardcharger: a CHECK's functions and types are found in its table's schema, whoever writes
+	HardchargerNameScopeGuard hc_scope(entry_retriever, HardchargerNameScope::Of(table, "table"));
 	return BindConstraints(table.GetConstraints(), table.name, table.GetColumns());
 }
 

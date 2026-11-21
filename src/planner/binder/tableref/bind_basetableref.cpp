@@ -22,6 +22,11 @@
 
 namespace duckdb {
 
+// Hardcharger: called with the plan of each view as it is bound (null unless set).
+void (*hardcharger_bound_view_hook)(ClientContext &context, ViewCatalogEntry &view,
+                                    unique_ptr<LogicalOperator> &plan) = nullptr;
+
+
 static bool TryLoadExtensionForReplacementScan(ClientContext &context, const string &table_name) {
 	auto lower_name = StringUtil::Lower(table_name);
 	if (!Settings::Get<AutoloadKnownExtensionsSetting>(context)) {
@@ -340,6 +345,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		auto view_search_path =
 		    GetSearchPath(view_catalog_entry.ParentCatalog(), view_catalog_entry.ParentSchema().GetSchemaPath(), true);
 		view_binder->entry_retriever.SetSearchPath(std::move(view_search_path));
+		// Hardcharger: the view's functions and types are found in the view's schema, whoever reads it
+		view_binder->entry_retriever.SetNameScope(HardchargerNameScope::Of(view_catalog_entry, "view"));
 		// propagate the AT clause through the view
 		view_binder->entry_retriever.SetAtClause(entry_at_clause);
 
@@ -360,6 +367,9 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 			    entry_at_clause, std::move(bound_child.plan));
 		}
 		bind_context.AddView(root_index, subquery.alias, subquery, bound_child, view_catalog_entry);
+		if (hardcharger_bound_view_hook) {
+			hardcharger_bound_view_hook(context, view_catalog_entry, bound_child.plan);
+		}
 		return bound_child;
 	}
 	default:

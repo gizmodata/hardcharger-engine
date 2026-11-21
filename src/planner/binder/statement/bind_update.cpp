@@ -204,8 +204,12 @@ BoundStatement Binder::BindNode(UpdateQueryNode &node) {
 	update->capture_old_rows = capture_old_rows;
 	// bind the default values
 	auto &catalog_name = table.ParentCatalog().GetName();
-	BindDefaultValues(table.GetColumns(), update->bound_defaults, catalog_name.GetIdentifierName(),
-	                  table.ParentSchema().GetSchemaPath());
+	{
+		// Hardcharger: a default's functions and types are found in its table's schema
+		HardchargerNameScopeGuard hc_scope(entry_retriever, HardchargerNameScope::Of(table, "table"));
+		BindDefaultValues(table.GetColumns(), update->bound_defaults, catalog_name.GetIdentifierName(),
+		                  table.ParentSchema().GetSchemaPath());
+	}
 	update->bound_constraints = BindConstraints(table);
 
 	// project any additional columns required for the condition/expressions

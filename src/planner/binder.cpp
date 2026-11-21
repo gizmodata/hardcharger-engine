@@ -6,6 +6,8 @@
 #include "duckdb/common/enums/cte_materialize.hpp"
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include <random>
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/helper.hpp"
@@ -650,6 +652,56 @@ optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const Identifier &catalog, co
 optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const EntryLookupInfo &lookup_info,
                                                    OnEntryNotFound on_entry_not_found) {
 	return entry_retriever.GetEntry(lookup_info, on_entry_not_found);
+}
+
+// Hardcharger (server/scripts/patch-duckdb-name-scope.cmake)
+unique_ptr<ParsedExpression> Binder::HardchargerScoped(unique_ptr<ParsedExpression> expr,
+                                                       shared_ptr<const HardchargerNameScope> scope) {
+	if (!scope || !expr) {
+		return expr;
+	}
+	// One marker per object per statement: two expansions of one generated column must be the same
+	// parsed expression, or GROUP BY does not find the select list's copy among its groups.
+	Identifier marker;
+	for (auto &hc_known : global_binder_state->hardcharger_marked_scopes) {
+		auto &known = *hc_known.second;
+		if (&known.schema == &scope->schema && known.kind == scope->kind && known.object == scope->object) {
+			marker = hc_known.first;
+			break;
+		}
+	}
+	if (marker.empty()) {
+		// A name no SQL can give: an id drawn here, kept in this statement's binder state only.
+		std::random_device random;
+		string name = HardchargerNameScope::MARKER;
+		for (idx_t i = 0; i < 4; i++) {
+			auto word = static_cast<uint32_t>(random());
+			for (idx_t nibble = 0; nibble < 8; nibble++, word >>= 4) {
+				name += "0123456789abcdef"[word & 0xF];
+			}
+		}
+		marker = Identifier(name);
+		global_binder_state->hardcharger_marked_scopes[marker] = std::move(scope);
+	}
+	auto alias = expr->GetAlias();
+	auto location = expr->GetQueryLocation();
+	vector<unique_ptr<ParsedExpression>> children;
+	children.push_back(std::move(expr));
+	auto wrapped = make_uniq<FunctionExpression>(marker, std::move(children));
+	wrapped->SetAlias(alias);
+	wrapped->SetQueryLocation(location);
+	return std::move(wrapped);
+}
+
+shared_ptr<const HardchargerNameScope> Binder::HardchargerScopeOf(const FunctionExpression &function) {
+	if (!function.FunctionName().StartsWith(HardchargerNameScope::MARKER) || function.GetArguments().size() != 1) {
+		return nullptr;
+	}
+	auto entry = global_binder_state->hardcharger_marked_scopes.find(function.FunctionName());
+	if (entry == global_binder_state->hardcharger_marked_scopes.end()) {
+		return nullptr;
+	}
+	return entry->second;
 }
 
 //! Create a binder whose catalog search path is anchored to the table's catalog+schema

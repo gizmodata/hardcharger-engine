@@ -677,8 +677,17 @@ unique_ptr<SelectNode> Binder::BindPivot(PivotRef &ref, vector<unique_ptr<Parsed
 	idx_t total_pivots = 1;
 	for (auto &pivot : ref.pivots) {
 		if (!pivot.pivot_enum.empty()) {
-			auto &type_entry = Catalog::GetEntry<TypeCatalogEntry>(
-			    context, QualifiedName(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), pivot.pivot_enum));
+			// Hardcharger: under a name scope (a view's query) the enum is the scope's, like any other type
+			// the query names; DuckDB looks it up through the session otherwise
+			EntryLookupInfo hc_enum_lookup(
+			    CatalogType::TYPE_ENTRY,
+			    QualifiedName(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), pivot.pivot_enum));
+			auto &type_entry =
+			    hardcharger_scoped_lookup_hook && entry_retriever.GetNameScope()
+			        ? entry_retriever.GetEntry(hc_enum_lookup, OnEntryNotFound::THROW_EXCEPTION)->Cast<TypeCatalogEntry>()
+			        : Catalog::GetEntry<TypeCatalogEntry>(
+			              context,
+			              QualifiedName(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), pivot.pivot_enum));
 			auto type = type_entry.user_type;
 			if (type.id() != LogicalTypeId::ENUM) {
 				throw BinderException(ref, "Pivot must reference an ENUM type: %s is of type \"%s\"", pivot.pivot_enum,

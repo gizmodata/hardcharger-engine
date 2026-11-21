@@ -98,7 +98,14 @@ void Binder::ExpandDefaultInValuesList(InsertQueryNode &node, TableCatalogEntry 
 
 		// now replace any DEFAULT values with the corresponding default expression
 		for (idx_t list_idx = 0; list_idx < expr_list.values.size(); list_idx++) {
-			TryReplaceDefaultExpression(expr_list.values[list_idx][col_idx], column);
+			auto &hc_value = expr_list.values[list_idx][col_idx];
+			const bool hc_default =
+			    hc_value->GetExpressionType() == ExpressionType::VALUE_DEFAULT && column.HasDefaultValue();
+			TryReplaceDefaultExpression(hc_value, column);
+			if (hc_default) {
+				// Hardcharger: the column's default, written into the statement: still its table's names
+				hc_value = HardchargerScoped(std::move(hc_value), HardchargerNameScope::Of(table, "table"));
+			}
 		}
 	}
 }
@@ -539,6 +546,8 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 					// column is not specified - at the default value
 					if (column.HasDefaultValue()) {
 						expr = column.DefaultValue().Copy();
+						// Hardcharger: bound with the statement's source: still its table's names
+						expr = HardchargerScoped(std::move(expr), HardchargerNameScope::Of(table, "table"));
 					} else {
 						expr = ConstantExpression::FromValue(Value(column.Type()));
 					}
@@ -737,8 +746,12 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 
 	// bind the default values
 	auto &catalog_name = table.ParentCatalog().GetName();
-	BindDefaultValues(table.GetColumns(), insert->bound_defaults, catalog_name.GetIdentifierName(),
-	                  table.ParentSchema().GetSchemaPath());
+	{
+		// Hardcharger: a default's functions and types are found in its table's schema
+		HardchargerNameScopeGuard hc_scope(entry_retriever, HardchargerNameScope::Of(table, "table"));
+		BindDefaultValues(table.GetColumns(), insert->bound_defaults, catalog_name.GetIdentifierName(),
+		                  table.ParentSchema().GetSchemaPath());
+	}
 	insert->bound_constraints = BindConstraints(table);
 	if (!node.select_statement && !node.default_values) {
 		result.plan = std::move(insert);

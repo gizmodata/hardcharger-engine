@@ -71,5 +71,8 @@ private:
 	bool supported = true;
 	//! Whether the bar has already finished
 	bool finished = false;
+	//! Hardcharger: the query time (ms) before which Update computes nothing (progress_bar_time,
+	//! then 100 ms after each computation). server/scripts/patch-duckdb-progress-throttle.cmake.
+	uint32_t next_update_ms = 0;
 };
 } // namespace duckdb

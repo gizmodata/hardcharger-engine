@@ -25,6 +25,34 @@ class CatalogEntry;
 
 using catalog_entry_callback_t = std::function<void(CatalogEntry &)>;
 
+class StandardEntry;
+
+//! Hardcharger: where the functions, macros and types a stored expression names are found (a view's
+//! query, a column default, a CHECK constraint, a generated column, a trigger's body, a policy): this
+//! schema and DuckDB's own, whatever the session. server/scripts/patch-duckdb-name-scope.cmake.
+struct HardchargerNameScope {
+	HardchargerNameScope(SchemaCatalogEntry &schema_p, string kind_p, string object_p)
+	    : schema(schema_p), kind(std::move(kind_p)), object(std::move(object_p)) {
+	}
+	//! The scope of a table's or view's own expressions (null while no hook is set)
+	static shared_ptr<const HardchargerNameScope> Of(const StandardEntry &entry, const char *kind);
+
+	//! The prefix of the marker call that carries a scope with a spliced expression (Binder::HardchargerScoped)
+	static constexpr const char *MARKER = "__hardcharger_name_scope_";
+
+	SchemaCatalogEntry &schema;
+	//! What the expression belongs to, for messages: "table", "view", "trigger", "policy"; and its name
+	string kind;
+	string object;
+};
+
+//! Answers a lookup made under a scope. Returns false for a lookup that is not its to answer (DuckDB's
+//! own lookup follows); true with the entry (or null, where the caller takes null for "not found").
+//! Null unless Hardcharger sets it.
+extern bool (*hardcharger_scoped_lookup_hook)(ClientContext &context, const HardchargerNameScope &scope,
+                                              const EntryLookupInfo &lookup_info, OnEntryNotFound on_entry_not_found,
+                                              optional_ptr<CatalogEntry> &result);
+
 // Wraps the Catalog::GetEntry method
 class CatalogEntryRetriever {
 public:
@@ -73,6 +101,12 @@ public:
 	void SetSearchPath(vector<CatalogSearchEntry> entries);
 
 	void SetCallback(catalog_entry_callback_t callback);
+	//! Hardcharger: the name scope of the stored expression this retriever binds for (null: none)
+	const shared_ptr<const HardchargerNameScope> &GetNameScope() const {
+		return name_scope;
+	}
+	//! Sets it, and returns the one it had
+	shared_ptr<const HardchargerNameScope> SetNameScope(shared_ptr<const HardchargerNameScope> scope);
 	catalog_entry_callback_t GetCallback();
 
 	optional_ptr<BoundAtClause> GetAtClause() const;
@@ -87,6 +121,30 @@ private:
 	ClientContext &context;
 	shared_ptr<CatalogSearchPath> search_path;
 	optional_ptr<BoundAtClause> at_clause;
+	shared_ptr<const HardchargerNameScope> name_scope;
+};
+
+//! Hardcharger: binds under `scope` until it goes out of (C++) scope; a null scope changes nothing
+class HardchargerNameScopeGuard {
+public:
+	HardchargerNameScopeGuard(CatalogEntryRetriever &retriever_p, shared_ptr<const HardchargerNameScope> scope)
+	    : retriever(retriever_p), active(scope != nullptr) {
+		if (active) {
+			previous = retriever.SetNameScope(std::move(scope));
+		}
+	}
+	~HardchargerNameScopeGuard() {
+		if (active) {
+			retriever.SetNameScope(std::move(previous));
+		}
+	}
+	HardchargerNameScopeGuard(const HardchargerNameScopeGuard &) = delete;
+	HardchargerNameScopeGuard &operator=(const HardchargerNameScopeGuard &) = delete;
+
+private:
+	CatalogEntryRetriever &retriever;
+	bool active;
+	shared_ptr<const HardchargerNameScope> previous;
 };
 
 } // namespace duckdb

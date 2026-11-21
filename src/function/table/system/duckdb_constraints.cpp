@@ -24,6 +24,7 @@ struct ConstraintEntry {
 			return;
 		}
 		auto binder = Binder::CreateBinder(context);
+		binder->EntryRetriever().SetNameScope(HardchargerNameScope::Of(table, "table")); // Hardcharger
 		bound_constraints = binder->BindConstraints(table.GetConstraints(), table.name, table.GetColumns());
 	}
 

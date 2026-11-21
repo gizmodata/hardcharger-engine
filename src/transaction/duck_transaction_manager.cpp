@@ -314,8 +314,12 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 	if (!db.IsSystem() && !db.IsTemporary()) {
 		if (transaction.ChangesMade()) {
 			if (transaction.IsReadOnly()) {
-				throw InternalException("Attempting to commit a transaction that is read-only but has made changes - "
-				                        "this should not be possible");
+				// Hardcharger: reject this commit without invalidating the database.
+				error.Merge(ErrorData(TransactionException(
+				    "Cannot commit changes made by statement binding in an unregistered write transaction")));
+				t_lock.unlock();
+				RollbackTransaction(transaction);
+				return error;
 			}
 		}
 	}

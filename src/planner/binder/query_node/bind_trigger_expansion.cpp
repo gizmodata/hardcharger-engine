@@ -452,6 +452,29 @@ BoundStatement Binder::ExpandTriggers(QueryNode &node, TableCatalogEntry &table,
 		global_binder_state->trigger_old_capture.insert(*capture_base);
 		global_binder_state->trigger_old_capture_cte_names[*capture_base] = old_capture_names;
 	}
+	// Hardcharger: each trigger's body (every CTE of the chain but the writer's own statement) finds
+	// its functions and types in the trigger's table's schema, whoever fires it. The bodies are
+	// registered by their node, which `outer` owns: the entries are taken out again before `outer`
+	// is freed (also when binding throws), or a query node made later in the same statement at a
+	// freed body's address (a view's, another statement's) would be bound under this scope.
+	vector<reference<QueryNode>> hc_bodies;
+	if (auto hc_scope = HardchargerNameScope::Of(table, "trigger")) {
+		for (auto &hc_cte : outer->cte_map.map) {
+			if (hc_cte.second->is_trigger_generated && !(hc_cte.first == base_cte_name)) {
+				global_binder_state->hardcharger_node_scopes[*hc_cte.second->query_node] = hc_scope;
+				hc_bodies.push_back(*hc_cte.second->query_node);
+			}
+		}
+	}
+	struct HardchargerForgetBodies {
+		GlobalBinderState &state;
+		vector<reference<QueryNode>> &bodies;
+		~HardchargerForgetBodies() {
+			for (auto &body : bodies) {
+				state.hardcharger_node_scopes.erase(body);
+			}
+		}
+	} hc_forget_bodies {*global_binder_state, hc_bodies};
 	auto chain = Bind(*outer);
 	if (capture_base) {
 		global_binder_state->trigger_old_capture.erase(*capture_base);
@@ -672,6 +695,7 @@ BoundStatement Binder::ExpandRowTriggers(QueryNode &node, vector<unique_ptr<Pars
 		auto &trigger = triggers[i].get();
 
 		auto child_binder = Binder::CreateBinder(context, this);
+		child_binder->EntryRetriever().SetNameScope(HardchargerNameScope::Of(table, "trigger")); // Hardcharger
 		auto body_copy = trigger.trigger_action->Copy();
 		auto bound_body = child_binder->Bind(*body_copy);
 

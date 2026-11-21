@@ -310,11 +310,20 @@ void ExtensionRepositoryManager::CheckCanCreate(DatabaseInstance &db, const stri
 	// repository resolved from its host: the name says who is trusted, and the host's own file says what, so the
 	// 'hosts' default lets it through
 	auto access = GetAccess(db);
-	if (access == ExtensionRepositoryAccess::ALLOWED || (from_host && access != ExtensionRepositoryAccess::FORBIDDEN)) {
+	// Hardcharger: under the default 'hosts', a repository named by its host needs the same explicit
+	// opt-in as one given by prefix (DuckDB 2.0.0's rule).
+	if (access == ExtensionRepositoryAccess::ALLOWED || (from_host && access == ExtensionRepositoryAccess::HOSTS_ONLY)) {
 		return;
 	}
 	string message;
-	if (access == ExtensionRepositoryAccess::FORBIDDEN) {
+	if (access == ExtensionRepositoryAccess::HOSTS) {
+		message = StringUtil::Format(
+		    "Cannot create extension repository '%s': adding a repository trusts a new signing key, and this server "
+		    "adds none until an administrator allows it. Run SET GLOBAL allow_extension_repositories = 'allowed' "
+		    "(or 'hosts_only', for repositories named by their host only) first; the setting cannot be loosened "
+		    "again while the server runs.",
+		    name);
+	} else if (access == ExtensionRepositoryAccess::FORBIDDEN) {
 		message = StringUtil::Format("Cannot create extension repository '%s': allow_extension_repositories is "
 		                             "'forbidden', which does not allow adding any repository.",
 		                             name);

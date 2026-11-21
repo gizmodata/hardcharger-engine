@@ -133,7 +133,14 @@ Binder::BindMergeAction(LogicalMergeInto &merge_into, TableCatalogEntry &table, 
 			InsertBinder insert_binder(*this, context);
 			insert_binder.target_type = table.GetExpectedTypeForInsert(column);
 
+			const bool hc_default =
+			    action.expressions[i]->GetExpressionType() == ExpressionType::VALUE_DEFAULT && column.HasDefaultValue();
 			TryReplaceDefaultExpression(action.expressions[i], column);
+			if (hc_default) {
+				// Hardcharger: the column's default, written into the statement: still its table's names
+				action.expressions[i] =
+				    HardchargerScoped(std::move(action.expressions[i]), HardchargerNameScope::Of(table, "table"));
+			}
 			auto insert_expr = insert_binder.Bind(action.expressions[i]);
 			auto insert_type = insert_expr->GetReturnType();
 			auto expr_index = ColumnBinding::PushExpression(expressions, std::move(insert_expr));
@@ -293,8 +300,12 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 
 	// bind table constraints/default values in case these are referenced
 	auto &catalog_name = table.ParentCatalog().GetName();
-	BindDefaultValues(table.GetColumns(), merge_into->bound_defaults, catalog_name.GetIdentifierName(),
-	                  table.ParentSchema().GetSchemaPath());
+	{
+		// Hardcharger: a default's functions and types are found in its table's schema
+		HardchargerNameScopeGuard hc_scope(entry_retriever, HardchargerNameScope::Of(table, "table"));
+		BindDefaultValues(table.GetColumns(), merge_into->bound_defaults, catalog_name.GetIdentifierName(),
+		                  table.ParentSchema().GetSchemaPath());
+	}
 
 	merge_into->bound_constraints = BindConstraints(table);
 

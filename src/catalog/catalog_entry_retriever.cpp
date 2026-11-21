@@ -9,8 +9,28 @@
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/catalog/standard_entry.hpp"
 
 namespace duckdb {
+
+// Hardcharger (server/scripts/patch-duckdb-name-scope.cmake)
+bool (*hardcharger_scoped_lookup_hook)(ClientContext &context, const HardchargerNameScope &scope,
+                                       const EntryLookupInfo &lookup_info, OnEntryNotFound on_entry_not_found,
+                                       optional_ptr<CatalogEntry> &result) = nullptr;
+
+shared_ptr<const HardchargerNameScope> HardchargerNameScope::Of(const StandardEntry &entry, const char *kind) {
+	if (!hardcharger_scoped_lookup_hook) {
+		return nullptr;
+	}
+	return make_shared_ptr<HardchargerNameScope>(entry.schema, kind, entry.name.GetIdentifierName());
+}
+
+shared_ptr<const HardchargerNameScope>
+CatalogEntryRetriever::SetNameScope(shared_ptr<const HardchargerNameScope> scope) {
+	auto previous = std::move(name_scope);
+	name_scope = std::move(scope);
+	return previous;
+}
 
 optional_ptr<CatalogEntry> CatalogEntryRetriever::GetEntry(const EntryLookupInfo &lookup_info,
                                                            OnEntryNotFound on_entry_not_found) {
@@ -89,6 +109,7 @@ void CatalogEntryRetriever::Inherit(const CatalogEntryRetriever &parent) {
 	this->callback = parent.callback;
 	this->search_path = parent.search_path;
 	this->at_clause = parent.at_clause;
+	this->name_scope = parent.name_scope;
 }
 
 const CatalogSearchPath &CatalogEntryRetriever::GetSearchPath() const {

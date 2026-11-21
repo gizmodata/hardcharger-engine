@@ -13,6 +13,13 @@
 #include <algorithm>
 #include <sstream>
 
+// Chargewire: for ChargewireRegisterSequenceWrite
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/enums/database_modification_type.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
+
 namespace duckdb {
 
 constexpr const char *SequenceCatalogEntry::Name;
@@ -56,7 +63,28 @@ int64_t SequenceCatalogEntry::CurrentValue() {
 	return result;
 }
 
+// Chargewire: the use of a sequence is a write of its database. DuckDB is told before the
+// value changes, where it would otherwise learn of it only when a statement is executed: a
+// READ ONLY transaction, a database attached read-only and a transaction that has written
+// another database refuse here, with nothing changed.
+static void ChargewireRegisterSequenceWrite(SequenceCatalogEntry &sequence, DuckTransaction &transaction) {
+	if (sequence.temporary || !transaction.IsReadOnly()) {
+		return;
+	}
+	auto context = transaction.context.lock();
+	if (!context) {
+		return;
+	}
+	auto &database = sequence.ParentCatalog().GetAttached();
+	if (database.IsReadOnly()) {
+		throw TransactionException("Cannot change sequence \"%s\" - database \"%s\" is attached in read-only mode",
+		                           sequence.name, database.GetName());
+	}
+	MetaTransaction::Get(*context).ModifyDatabase(database, DatabaseModificationType::SEQUENCE);
+}
+
 int64_t SequenceCatalogEntry::NextValue(DuckTransaction &transaction) {
+	ChargewireRegisterSequenceWrite(*this, transaction);
 	lock_guard<mutex> seqlock(state->lock);
 	int64_t result;
 	result = state->data.counter;
@@ -101,6 +129,7 @@ int64_t SequenceCatalogEntry::NextValue(DuckTransaction &transaction) {
 }
 
 int64_t SequenceCatalogEntry::SetValue(DuckTransaction &transaction, int64_t value, bool is_called) {
+	ChargewireRegisterSequenceWrite(*this, transaction); // (setval)
 	{
 		lock_guard<mutex> seqlock(state->lock);
 		if (value < state->data.min_value || value > state->data.max_value) {

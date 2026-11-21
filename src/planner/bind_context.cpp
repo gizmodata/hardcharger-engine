@@ -201,6 +201,11 @@ unique_ptr<ParsedExpression> BindContext::ExpandGeneratedColumn(TableBinding &ta
                                                                 const Identifier &column_name) {
 	auto result = table_binding.ExpandGeneratedColumn(column_name);
 	result->SetAlias(column_name);
+	// Hardcharger: the expression is bound as part of the reading statement; its functions and types
+	// are still found in its table's schema
+	if (auto hc_entry = table_binding.GetStandardEntry()) {
+		result = binder.HardchargerScoped(std::move(result), HardchargerNameScope::Of(*hc_entry, "table"));
+	}
 	return result;
 }
 

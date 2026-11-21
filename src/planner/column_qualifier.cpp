@@ -237,6 +237,12 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	case ExpressionType::FUNCTION: {
 		// Special-handling for lambdas, which are inside function expressions.
 		auto &function = expr->Cast<FunctionExpression>();
+		if (auto hc_scope = binder.HardchargerScopeOf(function)) {
+			// Hardcharger: a generated column's expression, qualified under its table's name scope
+			HardchargerNameScopeGuard hc_guard(binder.EntryRetriever(), std::move(hc_scope));
+			QualifyColumnNames(function.GetArgumentsMutable()[0].GetExpressionMutable(), lambda_params, false);
+			return;
+		}
 		if (!ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
 			QualifyFunction(function);
 		}
@@ -313,6 +319,11 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	                              OnEntryNotFound::RETURN_NULL);
 	if (!func) {
 		// we could not find the function - bail
+		return nullptr;
+	}
+	if (hardcharger_scoped_lookup_hook && binder.EntryRetriever().GetNameScope() &&
+	    !func->ParentCatalog().IsSystemCatalog()) {
+		// Hardcharger: inside a stored expression only DuckDB's own functions are called as value.f()
 		return nullptr;
 	}
 	// the function exists in the system catalog - turn this into a dot call

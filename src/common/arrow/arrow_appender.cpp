@@ -10,8 +10,51 @@
 #include "duckdb/common/arrow/appender/list.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/common/types/uhugeint.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
 
 namespace duckdb {
+
+// Hardcharger: HUGEINT and UHUGEINT leave as decimal128(38, 0), which holds 38 digits; a
+// value with more is refused rather than sent wrong (UHUGEINT's upper half would arrive
+// negative). server/scripts/patch-duckdb-arrow-hugeint.cmake.
+struct HardchargerDecimal38Converter {
+	[[noreturn]] static void Refuse(const string &type, const string &value) {
+		throw ConversionException("Hardcharger cannot send the " + type + " value " + value +
+		                          " as Arrow decimal128(38, 0), which holds at most 38 digits. CAST it to "
+		                          "VARCHAR, or run SET SESSION arrow_lossless_conversion = true "
+		                          "(DuckDB's 16-byte " + type + " Arrow type, which holds every value)");
+	}
+	static hugeint_t Check(hugeint_t input) {
+		const hugeint_t &limit = Hugeint::POWERS_OF_TEN[38];
+		if (input >= limit || input <= -limit) {
+			Refuse("HUGEINT", Hugeint::ToString(input));
+		}
+		return input;
+	}
+	static hugeint_t Check(uhugeint_t input) {
+		if (input >= Uhugeint::POWERS_OF_TEN[38]) {
+			Refuse("UHUGEINT", Uhugeint::ToString(input));
+		}
+		hugeint_t result;
+		result.upper = static_cast<int64_t>(input.upper);
+		result.lower = input.lower;
+		return result;
+	}
+	template <class TGT, class SRC>
+	static TGT Operation(SRC input) {
+		return Check(input);
+	}
+	// A NULL's bytes are whatever the vector held: never checked, sent as zero.
+	static bool SkipNulls() {
+		return true;
+	}
+	template <class TGT>
+	static void SetNull(TGT &value) {
+		value = TGT();
+	}
+};
 
 //===--------------------------------------------------------------------===//
 // ArrowAppender
@@ -202,10 +245,18 @@ static void InitializeFunctionPointers(ArrowAppendData &append_data, const Logic
 		}
 		break;
 	case LogicalTypeId::HUGEINT:
-		InitializeAppenderForType<ArrowScalarData<hugeint_t>>(append_data);
+		if (append_data.options.arrow_lossless_conversion) {
+			InitializeAppenderForType<ArrowScalarData<hugeint_t>>(append_data);
+		} else {
+			InitializeAppenderForType<ArrowScalarData<hugeint_t, hugeint_t, HardchargerDecimal38Converter>>(append_data);
+		}
 		break;
 	case LogicalTypeId::UHUGEINT:
-		InitializeAppenderForType<ArrowScalarData<uhugeint_t>>(append_data);
+		if (append_data.options.arrow_lossless_conversion) {
+			InitializeAppenderForType<ArrowScalarData<uhugeint_t>>(append_data);
+		} else {
+			InitializeAppenderForType<ArrowScalarData<hugeint_t, uhugeint_t, HardchargerDecimal38Converter>>(append_data);
+		}
 		break;
 	case LogicalTypeId::UTINYINT:
 		InitializeAppenderForType<ArrowScalarData<uint8_t>>(append_data);

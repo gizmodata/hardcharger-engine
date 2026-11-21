@@ -72,6 +72,7 @@ void ProgressBar::Start() {
 	profiler.Start();
 	query_progress.Initialize();
 	supported = true;
+	next_update_ms = static_cast<uint32_t>(MinValue<idx_t>(show_progress_after, NumericLimits<uint32_t>::Maximum()));
 }
 
 bool ProgressBar::PrintEnabled() const {
@@ -109,25 +110,40 @@ void ProgressBar::Update(bool final) {
 		return;
 	}
 
-	ProgressData progress;
-	idx_t invalid_pipelines = executor.GetPipelinesProgress(progress);
-
-	double new_percentage = 0.0;
-	if (invalid_pipelines == 0 && progress.IsValid()) {
-		if (progress.total > 1e15) {
-			progress.Normalize(1e15);
+	// Hardcharger: computing the estimate walks every pipeline under the executor's lock, which
+	// the worker threads need too; done after every task it stalled plans with many pipelines.
+	// Nothing before progress_bar_time, then at most every 100 ms.
+	// server/scripts/patch-duckdb-progress-throttle.cmake.
+	static constexpr double UPDATE_INTERVAL_MS = 100;
+	const double elapsed_ms = profiler.Elapsed() * 1000.0;
+	if (elapsed_ms < static_cast<double>(next_update_ms)) {
+		if (!final) {
+			return;
 		}
-		query_progress.rows_processed = idx_t(progress.done);
-		query_progress.total_rows_to_process = idx_t(progress.total);
-		new_percentage = progress.ProgressDone() * 100;
-	}
+	} else {
+		next_update_ms = static_cast<uint32_t>(
+		    MinValue<double>(elapsed_ms + UPDATE_INTERVAL_MS, static_cast<double>(NumericLimits<uint32_t>::Maximum())));
 
-	if (!final && invalid_pipelines > 0) {
-		return;
-	}
+		ProgressData progress;
+		idx_t invalid_pipelines = executor.GetPipelinesProgress(progress);
 
-	if (new_percentage > query_progress.percentage) {
-		query_progress.percentage = new_percentage;
+		double new_percentage = 0.0;
+		if (invalid_pipelines == 0 && progress.IsValid()) {
+			if (progress.total > 1e15) {
+				progress.Normalize(1e15);
+			}
+			query_progress.rows_processed = idx_t(progress.done);
+			query_progress.total_rows_to_process = idx_t(progress.total);
+			new_percentage = progress.ProgressDone() * 100;
+		}
+
+		if (!final && invalid_pipelines > 0) {
+			return;
+		}
+
+		if (new_percentage > query_progress.percentage) {
+			query_progress.percentage = new_percentage;
+		}
 	}
 	if (ShouldPrint(final)) {
 		if (final) {

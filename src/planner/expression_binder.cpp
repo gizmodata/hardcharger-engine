@@ -82,6 +82,11 @@ BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, 
 		return BindExpression(expr_ref.Cast<TypeExpression>(), depth);
 	case ExpressionClass::FUNCTION: {
 		auto &function = expr_ref.Cast<FunctionExpression>();
+		if (auto hc_scope = binder.HardchargerScopeOf(function)) {
+			// Hardcharger: a generated column's expression, bound under its table's name scope
+			HardchargerNameScopeGuard hc_guard(binder.EntryRetriever(), std::move(hc_scope));
+			return BindExpression(function.GetArgumentsMutable()[0].GetExpressionMutable(), depth, root_expression);
+		}
 		if (IsUnnestFunction(function.FunctionName())) {
 			// special case, not in catalog
 			return BindUnnest(function, depth, root_expression);

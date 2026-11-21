@@ -33,6 +33,13 @@ static bool IsSideEffectingQueryNode(QueryNodeType type) {
 }
 
 BoundStatement Binder::BindNode(QueryNode &node) {
+	if (hardcharger_scoped_lookup_hook) {
+		// Hardcharger: a query node registered with a name scope (a trigger's body) is bound under it
+		auto hc_scope = global_binder_state->hardcharger_node_scopes.find(node);
+		if (hc_scope != global_binder_state->hardcharger_node_scopes.end()) {
+			entry_retriever.SetNameScope(hc_scope->second);
+		}
+	}
 	reference<Binder> current_binder(*this);
 	vector<BoundCTEData> bound_ctes;
 	idx_t dml_cte_count = 0;

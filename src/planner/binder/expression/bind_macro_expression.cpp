@@ -195,6 +195,7 @@ void ExpressionBinder::UnfoldMacroExpression(FunctionExpression &function, Scala
 	// qualify only the macro parameters with a new empty binder that only knows the macro binding
 	auto dummy_binder = Binder::CreateBinder(context);
 	dummy_binder->macro_binding = new_macro_binding.get();
+	dummy_binder->EntryRetriever().SetNameScope(binder.EntryRetriever().GetNameScope()); // Hardcharger
 	ExpressionBinder::QualifyColumnNames(*dummy_binder, expr);
 
 	// now replace the parameters

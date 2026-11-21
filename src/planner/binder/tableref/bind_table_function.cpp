@@ -22,6 +22,10 @@
 
 namespace duckdb {
 
+// Chargewire: called before the bind step of every table function, whoever wrote the call
+// (null unless set). It may throw to refuse the function.
+void (*chargewire_bind_table_function_hook)(ClientContext &context, const Identifier &function_name) = nullptr;
+
 enum class TableFunctionBindType { STANDARD_TABLE_FUNCTION, TABLE_IN_OUT_FUNCTION, TABLE_PARAMETER_FUNCTION };
 
 static TableFunctionBindType GetTableFunctionBindType(TableFunctionCatalogEntry &table_function,
@@ -246,6 +250,9 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 	// the function binder has placed them already, but not for a table in-out call or a direct bind
 	table_function.GetSignature().FillNamedDefaults(context, named_parameters);
 	table_function.SetCallArguments(parameters, named_parameters);
+	if (chargewire_bind_table_function_hook) {
+		chargewire_bind_table_function_hook(context, table_function.GetName());
+	}
 	if (table_function.bind || table_function.bind_replace || table_function.bind_operator) {
 		TableFunctionBindInput bind_input(parameters, named_parameters, input_table_types, input_table_names,
 		                                  table_function.function_info.get(), this, table_function, ref, input_plan);

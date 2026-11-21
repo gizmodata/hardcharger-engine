@@ -264,6 +264,10 @@ QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const Qual
 	// a nested schema path was given - resolve the catalog holding the outermost schema so that the resulting
 	// [catalog, schema path..., name] is fully qualified
 	auto catalog = path.front();
+	if (IsInvalidCatalog(catalog) && hardcharger_scoped_lookup_hook && retriever.GetNameScope()) {
+		// Hardcharger: under a name scope a nested schema path is in the scope's catalog, not the session's
+		catalog = retriever.GetNameScope()->schema.ParentCatalog().GetName();
+	}
 	if (IsInvalidCatalog(catalog)) {
 		EntryLookupInfo schema_lookup(CatalogType::SCHEMA_ENTRY, QualifiedName(schema_path[0]));
 		auto schema = Catalog::GetSchema(retriever, schema_lookup, OnEntryNotFound::RETURN_NULL);
@@ -284,6 +288,10 @@ QualifiedName Binder::BindTableName(CatalogEntryRetriever &retriever, const Qual
 }
 
 QualifiedName Binder::BindTableName(const QualifiedName &name) {
+	if (hardcharger_scoped_lookup_hook && entry_retriever.GetNameScope()) {
+		// Hardcharger: under a name scope, with the binder's own retriever (which has the scope)
+		return BindTableName(entry_retriever, name);
+	}
 	CatalogEntryRetriever retriever(context);
 	return BindTableName(retriever, name);
 }

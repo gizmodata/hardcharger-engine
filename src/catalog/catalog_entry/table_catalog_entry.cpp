@@ -300,6 +300,8 @@ void TableCatalogEntry::BindUpdateConstraints(Binder &binder, LogicalGet &get, L
 	// suppose we have a constraint CHECK(i + j < 10); now we need both i and j to check the constraint
 	// if we are only updating one of the two columns we add the other one to the UPDATE set
 	// with a "useless" update (i.e. i=i) so we can verify that the CHECK constraint is not violated
+	// Hardcharger: as Binder::BindConstraints(table) binds them (patch-duckdb-name-scope.cmake)
+	HardchargerNameScopeGuard hc_scope(binder.EntryRetriever(), HardchargerNameScope::Of(*this, "table"));
 	auto bound_constraints = binder.BindConstraints(constraints, name, GetColumns());
 	for (auto &constraint : bound_constraints) {
 		if (constraint->type == ConstraintType::CHECK) {

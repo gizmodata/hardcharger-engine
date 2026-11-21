@@ -211,6 +211,10 @@ struct GlobalBinderState {
 	optional_ptr<TableCatalogEntry> trigger_creation_table;
 	//! Name of the trigger being created (for error messages)
 	Identifier trigger_creation_name;
+	//! Hardcharger: the name scopes of this statement's spliced expressions, by their marker's name
+	//! (Binder::HardchargerScoped), and of query nodes bound with one (a trigger's body)
+	identifier_map_t<shared_ptr<const HardchargerNameScope>> hardcharger_marked_scopes;
+	reference_map_t<QueryNode, shared_ptr<const HardchargerNameScope>> hardcharger_node_scopes;
 };
 
 //! Bind the parsed query tree to the actual columns present in the catalog.
@@ -393,6 +397,13 @@ public:
 	CatalogEntryRetriever &EntryRetriever() {
 		return entry_retriever;
 	}
+	//! Hardcharger: `expr` wrapped in a marker call, so that wherever it is bound in this statement its
+	//! functions and types are found under `scope` (a generated column's expression is spliced into the
+	//! reading statement's own). A null scope returns `expr` as it is.
+	unique_ptr<ParsedExpression> HardchargerScoped(unique_ptr<ParsedExpression> expr,
+	                                               shared_ptr<const HardchargerNameScope> scope);
+	//! The scope a marker call of this statement carries; null for any other function
+	shared_ptr<const HardchargerNameScope> HardchargerScopeOf(const FunctionExpression &function);
 	optional_ptr<BoundParameterMap> GetParameters();
 	void SetParameters(BoundParameterMap &parameters);
 	void SetStatementParameters(const identifier_map_t<idx_t> &statement_parameters);

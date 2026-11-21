@@ -415,6 +415,7 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 		try {
 			// Create a binder to bind this index.
 			auto binder = Binder::CreateBinder(context);
+			binder->EntryRetriever().SetNameScope(HardchargerNameScope::Of(table, "table")); // Hardcharger
 
 			// Add the table to the binder.
 			vector<ColumnIndex> dummy_column_ids;

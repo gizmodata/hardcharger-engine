@@ -820,6 +820,7 @@ void DataTable::VerifyAppendConstraints(ConstraintState &constraint_state, Clien
 		// Verify the generated columns against the inserted values.
 		auto binder = Binder::CreateBinder(context);
 		physical_index_set_t bound_columns;
+		binder->EntryRetriever().SetNameScope(HardchargerNameScope::Of(table, "table")); // Hardcharger
 		CheckBinder generated_check_binder(*binder, context, table.name, table.GetColumns(), bound_columns);
 		for (auto &col : table.GetColumns().Logical()) {
 			if (!col.Generated()) {
@@ -1028,6 +1029,7 @@ void DataTable::LocalAppend(DuckTableEntry &table, ClientContext &context, Colum
 
 	auto binder = Binder::CreateBinder(context);
 	ConstantBinder default_binder(*binder, context, "DEFAULT value");
+	binder->EntryRetriever().SetNameScope(HardchargerNameScope::Of(table, "table")); // Hardcharger
 	vector<unique_ptr<Expression>> expressions;
 	for (idx_t i = 0; i < column_list.PhysicalColumnCount(); i++) {
 		auto expr = active_expressions.find(PhysicalIndex(i));

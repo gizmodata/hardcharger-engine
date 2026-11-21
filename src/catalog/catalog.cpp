@@ -1368,6 +1368,14 @@ CatalogEntryLookup Catalog::TryLookupDefaultSchema(CatalogEntryRetriever &retrie
 
 optional_ptr<CatalogEntry> Catalog::GetEntry(CatalogEntryRetriever &retriever, const EntryLookupInfo &lookup_info,
                                              OnEntryNotFound if_not_found) {
+	if (hardcharger_scoped_lookup_hook && retriever.GetNameScope()) {
+		// Hardcharger: a stored expression's functions and types are found under its scope
+		optional_ptr<CatalogEntry> hc_entry;
+		if (hardcharger_scoped_lookup_hook(retriever.GetContext(), *retriever.GetNameScope(), lookup_info, if_not_found,
+		                                   hc_entry)) {
+			return hc_entry;
+		}
+	}
 	auto result = TryLookupEntryAcrossCatalogs(retriever, lookup_info, if_not_found);
 
 	// Try autoloading extension to resolve lookup
