@@ -13,6 +13,7 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "re2/regexp.h"
 #include "re2/stringpiece.h"
 #include "utf8proc_wrapper.hpp"
 
@@ -269,6 +270,68 @@ bool RegexpExtractBindData::Equals(const FunctionData &other_p) const {
 	       no_match_returns_input == other.no_match_returns_input;
 }
 
+struct ScalarCaptureState : public RegexLocalState {
+	explicit ScalarCaptureState(RegexpExtractBindData &info) : RegexLocalState(info) {
+		using namespace duckdb_re2;
+		const auto &pattern = info.constant_string;
+		if (info.group_index <= 0 || info.options.literal() || info.options.longest_match() || pattern.size() < 3 ||
+		    pattern.compare(pattern.size() - 3, 3, ".*$") != 0 || pattern.find("\\C") != string::npos) {
+			return;
+		}
+		auto tree = constant_pattern.Regexp();
+		auto count = tree->nsub();
+		if (tree->op() != kRegexpConcat || count < 4 || tree->sub()[0]->op() != kRegexpBeginText ||
+		    tree->sub()[count - 1]->op() != kRegexpEndText) {
+			return;
+		}
+		auto star = tree->sub()[count - 2];
+		if (star->op() != kRegexpStar) {
+			return;
+		}
+		auto dot = star->sub()[0];
+		includes_newline = dot->op() == kRegexpAnyChar;
+		if (!includes_newline &&
+		    (dot->op() != kRegexpCharClass || dot->cc()->size() != Runemax || dot->cc()->Contains('\n'))) {
+			return;
+		}
+		// The requested capture is before the suffix. With leftmost-first matching and a suffix
+		// that accepts every remaining character, RE2 can return as soon as it finds that capture.
+		auto shortened = make_uniq<RE2>(pattern.substr(0, pattern.size() - 3), info.options);
+		if (!shortened->ok() || shortened->NumberOfCapturingGroups() != constant_pattern.NumberOfCapturingGroups()) {
+			return;
+		}
+		auto prefix = shortened->Regexp();
+		if (prefix->op() != kRegexpConcat || prefix->nsub() != count - 2) {
+			return;
+		}
+		// Verify the parser retained the same prefix, including alternations and scoped flags.
+		for (int i = 0; i < prefix->nsub(); i++) {
+			if (tree->sub()[i]->ToString() != prefix->sub()[i]->ToString()) {
+				return;
+			}
+		}
+		short_pattern = std::move(shortened);
+	}
+
+	const RE2 &PatternFor(string_t input) const {
+		return short_pattern && (includes_newline || !memchr(input.GetData(), '\n', input.GetSize()))
+		           ? *short_pattern
+		           : constant_pattern;
+	}
+
+	unique_ptr<RE2> short_pattern;
+	bool includes_newline = false;
+};
+
+static unique_ptr<FunctionLocalState> InitScalarCapture(ExpressionState &, const BoundFunctionExpression &,
+                                                        FunctionData *bind_data) {
+	auto &info = bind_data->Cast<RegexpExtractBindData>();
+	if (info.constant_pattern) {
+		return make_uniq<ScalarCaptureState>(info);
+	}
+	return nullptr;
+}
+
 static void RegexExtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	const auto &info = func_expr.BindInfo()->Cast<RegexpExtractBindData>();
@@ -281,15 +344,15 @@ static void RegexExtractFunction(DataChunk &args, ExpressionState &state, Vector
 	StringVector::AddHeapReference(result, strings);
 
 	if (info.constant_pattern) {
-		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<RegexLocalState>();
-		const auto &re = lstate.constant_pattern;
+		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<ScalarCaptureState>();
 		// A flat or sliced input can have runs of equal strings even without a storage dictionary.
 		// The result already retains the input heap, so equal adjacent values can share their capture.
 		bool have_previous = false;
 		string_t previous_input, previous_capture;
 		UnaryExecutor::Execute<string_t, string_t>(strings, result, [&](string_t input) {
 			if (!have_previous || input != previous_input) {
-				previous_capture = ExtractCaptureGroup(input, re, info.group_index, info.no_match_returns_input);
+				previous_capture =
+				    ExtractCaptureGroup(input, lstate.PatternFor(input), info.group_index, info.no_match_returns_input);
 				previous_input = input;
 				have_previous = true;
 			}
@@ -503,19 +566,19 @@ ScalarFunctionSet RegexpExtractFun::GetFunctions() {
 	ScalarFunctionSet regexp_extract("regexp_extract");
 	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}},
 	                                             LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind,
-	                                             RegexInitLocalState));
+	                                             InitScalarCapture));
 	regexp_extract.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"group", LogicalType::INTEGER}},
-	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, RegexInitLocalState));
+	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, InitScalarCapture));
 	regexp_extract.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"options", LogicalType::VARCHAR}},
-	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, RegexInitLocalState));
+	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, InitScalarCapture));
 	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
 	                                              {"regex", LogicalType::VARCHAR},
 	                                              {"group", LogicalType::INTEGER},
 	                                              {"options", LogicalType::VARCHAR}},
 	                                             LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind,
-	                                             RegexInitLocalState));
+	                                             InitScalarCapture));
 	// REGEXP_EXTRACT(<string>, <pattern>, [<group 1 name>[, <group n name>]...])
 	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
 	                                              {"regex", LogicalType::VARCHAR},

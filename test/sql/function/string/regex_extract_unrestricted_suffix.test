@@ -1,0 +1,34 @@
+# name: test/sql/function/string/regex_extract_unrestricted_suffix.test
+# description: An unrestricted trailing wildcard preserves earlier capture groups
+# group: [string]
+
+statement ok
+CREATE TABLE inputs AS SELECT row_number() OVER () AS i, s FROM (VALUES ('abbc/αβ'), ('ab/b/c'), ('a/c'), ('a'), (''), (E'ab/x\ny'), (E'ab\n/c'), (E'ab/c\n'), ('ab/' || chr(0) || 'c'), (NULL)) t(s);
+
+# A nonconstant pattern forces the original RE2 match. Exercise overlapping and
+# optional subexpressions, actual line breaks before/after the separator, and no match.
+query I
+SELECT count(*) FROM inputs WHERE regexp_extract(s, '^(a(?:b*?|b+)?)/.*$',1,'k') IS DISTINCT FROM regexp_extract(s, CASE WHEN i%2=0 THEN '^(a(?:b*?|b+)?)/.*$' ELSE '^(a(?:b*?|b+)?)/.*$(?:)' END,1,'k')
+----
+0
+
+query I
+SELECT count(*) FROM inputs WHERE regexp_extract(s, '(?s)^(a[^/]+)/.*$',1) IS DISTINCT FROM regexp_extract(s, CASE WHEN i%2=0 THEN '(?s)^(a[^/]+)/.*$' ELSE '(?s)^(a[^/]+)/.*$(?:)' END,1)
+----
+0
+
+# Whole match includes the entire tail. Escaped literal dots cannot consume it.
+query TT
+SELECT regexp_extract('ab/cd', '^(ab)/.*$', 0), regexp_extract('ab/cd', '^(ab)/\.*$', 1)
+----
+ab/cd	(empty)
+
+query T
+SELECT regexp_extract('ab/xyz', '^(a)$|^(ab)/.*$', 2)
+----
+ab
+
+query T
+SELECT regexp_extract('é/x', '^(\C)/.*$', 1, 'k')
+----
+é/x
