@@ -2,6 +2,11 @@
 # description: Regression test for COPY to gzip when a single write exceeds 4 GiB (UINT32_MAX)
 # group: [csv]
 
+# Growing the CSV output buffer past 4 GiB needs more than 12 GiB in the
+# allocator budget. Set the limit for this test independently of the host default.
+statement ok
+SET memory_limit = '13GiB';
+
 statement ok
 COPY (SELECT repeat('x', 2100000) AS doc FROM range(2048)) TO '{TEST_DIR}/large_gzip_block.csv.gz' (FORMAT CSV, HEADER false);
 
