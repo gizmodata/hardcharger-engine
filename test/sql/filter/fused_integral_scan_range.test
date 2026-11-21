@@ -1,0 +1,62 @@
+# name: test/sql/filter/fused_integral_scan_range.test
+# description: Check stable native scan selections for two-sided integral ranges.
+# group: [filter]
+
+foreach type TINYINT SMALLINT INTEGER BIGINT UTINYINT USMALLINT UINTEGER UBIGINT
+
+statement ok
+CREATE OR REPLACE TEMP TABLE range_values AS
+SELECT i, CASE WHEN i % 17 <> 0 THEN (i % 100)::{type} END AS v FROM range(5000) t(i);
+
+query II
+SELECT count(*), sum(i) FROM range_values WHERE v >= 12 AND v <= 16;
+----
+236	579705
+
+query II
+SELECT count(*), sum(i) FROM range_values WHERE v <= 16 AND v > 12;
+----
+189	463541
+
+query II
+SELECT count(*), sum(i) FROM range_values WHERE 12 <= v AND v < 16;
+----
+189	463953
+
+query II
+SELECT count(*), sum(i) FROM range_values WHERE v < 16 AND 12 < v;
+----
+142	347789
+
+endloop
+
+statement ok
+CREATE TABLE extrema(v BIGINT, u UBIGINT);
+INSERT INTO extrema VALUES
+    ('-9223372036854775808', 0), ('-1', 9223372036854775807),
+    (0, 9223372036854775808), (9223372036854775807, 18446744073709551615), (NULL, NULL);
+
+query I
+SELECT count(*) FROM extrema WHERE v > '-9223372036854775808'::BIGINT AND v < 9223372036854775807;
+----
+2
+
+query I
+SELECT count(*) FROM extrema WHERE u >= 9223372036854775808::UBIGINT AND u < 18446744073709551615::UBIGINT;
+----
+1
+
+query I
+SELECT count(*) FROM extrema WHERE v > -1 AND v < 0;
+----
+0
+
+statement ok
+CREATE TABLE dates_and_prices AS
+SELECT i, DATE '2000-01-01' + (i % 100)::INTEGER AS day, ((i % 100) * 0.01)::DECIMAL(15,2) AS price
+FROM range(5000) t(i);
+
+query II
+SELECT count(*), sum(i) FROM dates_and_prices WHERE day >= DATE '2000-01-13' AND day < DATE '2000-01-17' AND price BETWEEN 0.13 AND 0.15;
+----
+150	369600

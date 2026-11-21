@@ -10,6 +10,8 @@
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 
+#include <type_traits>
+
 namespace duckdb {
 
 static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expression &expression,
@@ -251,6 +253,65 @@ private:
 	Value constant;
 	SelectionVector result_sel;
 	idx_t current_capacity = 0;
+};
+
+// Both bounds apply to the same native column. Normalize them once, then use a single
+// unsigned difference to test the interval without overflow at signed or unsigned extrema.
+template <class T>
+class IntegralRangeFilterExecutor final : public ExpressionFilterExecutor {
+	using U = typename std::make_unsigned<T>::type;
+
+public:
+	IntegralRangeFilterExecutor(T lower, T upper, bool lower_open, bool upper_open) {
+		const auto span = static_cast<U>(static_cast<U>(upper) - static_cast<U>(lower));
+		const auto excluded = static_cast<U>(lower_open + upper_open);
+		empty = lower > upper || span < excluded;
+		start = static_cast<U>(static_cast<U>(lower) + lower_open);
+		width = static_cast<U>(span - excluded);
+	}
+
+	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,
+	                      idx_t &approved_tuple_count) override {
+		if (empty || !approved_tuple_count) {
+			approved_tuple_count = 0;
+			return 0;
+		}
+		if (result.Capacity() < approved_tuple_count) {
+			result.Initialize(approved_tuple_count);
+		}
+		UnifiedVectorFormat format;
+		vector.ToUnifiedFormat(format);
+		const auto data = UnifiedVectorFormat::GetData<T>(format);
+		idx_t count = 0;
+		if (!sel.IsSet() && !format.sel->IsSet() && format.validity.CannotHaveNull()) {
+			for (idx_t i = 0; i < approved_tuple_count; ++i) {
+				result.set_index(count, i);
+				count += Contains(data[i]);
+			}
+		} else {
+			for (idx_t i = 0; i < approved_tuple_count; ++i) {
+				const auto row = sel.get_index(i);
+				const auto index = format.sel->get_index(row);
+				result.set_index(count, row);
+				count += format.validity.RowIsValid(index) && Contains(data[index]);
+			}
+		}
+		if (count != approved_tuple_count) {
+			sel.Initialize(result);
+		}
+		approved_tuple_count = count;
+		return count;
+	}
+
+private:
+	bool Contains(T value) const {
+		return static_cast<U>(static_cast<U>(value) - start) <= width;
+	}
+
+	U start;
+	U width;
+	bool empty;
+	SelectionVector result;
 };
 
 class SelectivityOptionalFilterExecutor final : public ExpressionFilterExecutor {
@@ -564,8 +625,9 @@ static bool IsSupportedComparisonType(PhysicalType type) {
 	}
 }
 
-static unique_ptr<ExpressionFilterExecutor> TryCreateComparisonExecutor(const BoundFunctionExpression &func) {
-	auto comparison_type = func.GetExpressionType();
+static optional_ptr<const Value> GetComparisonConstant(const BoundFunctionExpression &func,
+                                                       ExpressionType &comparison_type) {
+	comparison_type = func.GetExpressionType();
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:
 	case ExpressionType::COMPARE_NOTEQUAL:
@@ -598,14 +660,80 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateComparisonExecutor(const Bo
 	if (column_type != constant_type || !IsSupportedComparisonType(column_type)) {
 		return nullptr;
 	}
-	return make_uniq<ComparisonFilterExecutor>(comparison_type, constant->GetValue());
+	return constant->GetValue();
+}
+
+static unique_ptr<ExpressionFilterExecutor> TryCreateIntegralRange(const BoundConjunctionExpression &conjunction) {
+	const auto &children = conjunction.GetChildren();
+	if (children.size() != 2 || conjunction.GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
+		return nullptr;
+	}
+	optional_ptr<const Value> lower, upper;
+	bool lower_open = false, upper_open = false;
+	for (auto &child : children) {
+		if (child->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+			return nullptr;
+		}
+		auto &func = child->Cast<BoundFunctionExpression>();
+		if (func.GetChildren().size() != 2) {
+			return nullptr;
+		}
+		ExpressionType type;
+		auto value = GetComparisonConstant(func, type);
+		if (!value || value->IsNull()) {
+			return nullptr;
+		}
+		if (type == ExpressionType::COMPARE_GREATERTHAN || type == ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
+			lower = value;
+			lower_open = type == ExpressionType::COMPARE_GREATERTHAN;
+		} else if (type == ExpressionType::COMPARE_LESSTHAN || type == ExpressionType::COMPARE_LESSTHANOREQUALTO) {
+			upper = value;
+			upper_open = type == ExpressionType::COMPARE_LESSTHAN;
+		}
+	}
+	if (!lower || !upper || lower->type() != upper->type()) {
+		return nullptr;
+	}
+	switch (lower->type().InternalType()) {
+	case PhysicalType::INT8:
+		return make_uniq<IntegralRangeFilterExecutor<int8_t>>(lower->GetValueUnsafe<int8_t>(),
+		                                                      upper->GetValueUnsafe<int8_t>(), lower_open, upper_open);
+	case PhysicalType::INT16:
+		return make_uniq<IntegralRangeFilterExecutor<int16_t>>(
+		    lower->GetValueUnsafe<int16_t>(), upper->GetValueUnsafe<int16_t>(), lower_open, upper_open);
+	case PhysicalType::INT32:
+		return make_uniq<IntegralRangeFilterExecutor<int32_t>>(
+		    lower->GetValueUnsafe<int32_t>(), upper->GetValueUnsafe<int32_t>(), lower_open, upper_open);
+	case PhysicalType::INT64:
+		return make_uniq<IntegralRangeFilterExecutor<int64_t>>(
+		    lower->GetValueUnsafe<int64_t>(), upper->GetValueUnsafe<int64_t>(), lower_open, upper_open);
+	case PhysicalType::UINT8:
+		return make_uniq<IntegralRangeFilterExecutor<uint8_t>>(
+		    lower->GetValueUnsafe<uint8_t>(), upper->GetValueUnsafe<uint8_t>(), lower_open, upper_open);
+	case PhysicalType::UINT16:
+		return make_uniq<IntegralRangeFilterExecutor<uint16_t>>(
+		    lower->GetValueUnsafe<uint16_t>(), upper->GetValueUnsafe<uint16_t>(), lower_open, upper_open);
+	case PhysicalType::UINT32:
+		return make_uniq<IntegralRangeFilterExecutor<uint32_t>>(
+		    lower->GetValueUnsafe<uint32_t>(), upper->GetValueUnsafe<uint32_t>(), lower_open, upper_open);
+	case PhysicalType::UINT64:
+		return make_uniq<IntegralRangeFilterExecutor<uint64_t>>(
+		    lower->GetValueUnsafe<uint64_t>(), upper->GetValueUnsafe<uint64_t>(), lower_open, upper_open);
+	default:
+		return nullptr;
+	}
 }
 
 static unique_ptr<ExpressionFilterExecutor> TryCreateFunctionExecutor(const BoundFunctionExpression &func,
                                                                       bool inside_selectivity_optional) {
 	if (!inside_selectivity_optional && func.GetChildren().size() == 2 &&
 	    BoundComparisonExpression::IsComparison(func.GetExpressionType())) {
-		return TryCreateComparisonExecutor(func);
+		ExpressionType comparison_type;
+		auto constant = GetComparisonConstant(func, comparison_type);
+		if (constant) {
+			return make_uniq<ComparisonFilterExecutor>(comparison_type, *constant);
+		}
+		return nullptr;
 	}
 	if (!IsColumnReferenceFunction(func)) {
 		return nullptr;
@@ -656,6 +784,12 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 			return nullptr;
 		}
 		auto &conjunction = expression.Cast<BoundConjunctionExpression>();
+		if (!inside_selectivity_optional) {
+			auto range = TryCreateIntegralRange(conjunction);
+			if (range) {
+				return range;
+			}
+		}
 		vector<unique_ptr<ExpressionFilterExecutor>> children;
 		for (auto &child_expr : conjunction.GetChildren()) {
 			auto child_executor = TryCreateFastExecutor(*child_expr, inside_selectivity_optional);
