@@ -1,0 +1,24 @@
+# name: test/sql/function/string/regex_extract_adjacent.test
+# description: Adjacent equal strings can share a capture within a single result vector
+# group: [string]
+
+statement ok
+CREATE TABLE runs AS SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN (i // 8) % 3 = 0 THEN '短://猫' WHEN (i // 8) % 3 = 1 THEN 'https://a-very-long-ß.example:443/path' ELSE '' END AS s FROM range(12290) r(i)
+
+# The independent, nonconstant pattern takes the per-row path. Check all rows, including
+# no-match passthrough, nulls, empty captures, chunk boundaries and a filtered selection.
+query I
+SELECT count(*) FROM runs WHERE i % 11 <> 0 AND regexp_extract(s, '://([^/]+)', 1, 'k') IS DISTINCT FROM regexp_extract(s, CASE WHEN i%2=0 THEN '://([^/]+)' ELSE '://([^/]+)(?:)' END, 1, 'k')
+----
+0
+
+query I
+SELECT count(*) FROM runs WHERE regexp_extract(s, '^()', 1) IS DISTINCT FROM CASE WHEN s IS NULL THEN NULL ELSE '' END
+----
+0
+
+# A deliberately split UTF-8 sequence retains the error on repeated equal inputs.
+query I
+SELECT count(try(regexp_extract(s, '^\C'))) FROM runs WHERE starts_with(s, '短')
+----
+0

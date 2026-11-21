@@ -283,8 +283,17 @@ static void RegexExtractFunction(DataChunk &args, ExpressionState &state, Vector
 	if (info.constant_pattern) {
 		auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<RegexLocalState>();
 		const auto &re = lstate.constant_pattern;
+		// A flat or sliced input can have runs of equal strings even without a storage dictionary.
+		// The result already retains the input heap, so equal adjacent values can share their capture.
+		bool have_previous = false;
+		string_t previous_input, previous_capture;
 		UnaryExecutor::Execute<string_t, string_t>(strings, result, [&](string_t input) {
-			return ExtractCaptureGroup(input, re, info.group_index, info.no_match_returns_input);
+			if (!have_previous || input != previous_input) {
+				previous_capture = ExtractCaptureGroup(input, re, info.group_index, info.no_match_returns_input);
+				previous_input = input;
+				have_previous = true;
+			}
+			return previous_capture;
 		});
 	} else {
 		BinaryExecutor::Execute<string_t, string_t, string_t>(
