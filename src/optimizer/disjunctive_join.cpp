@@ -138,7 +138,12 @@ void TrySplitDistinctJoin(Optimizer &optimizer, LogicalDistinct &distinct) {
 	// otherwise select a representative with first(), whose input would have changed.
 	for (auto index : ProjectionIndex::GetIndexes(projection.expressions.size())) {
 		auto &target = *distinct.distinct_targets[index];
-		if (!IsColumn(*projection.expressions[index]) || !IsColumn(target) ||
+		auto &output = *projection.expressions[index];
+		// DISTINCT can keep either of two SQL-equal values, such as -0.0 and +0.0, or
+		// differently spelled collated strings. Preserve the representative chosen by
+		// the original join unless every key has a unique representation for each value.
+		const auto &type = output.GetReturnType();
+		if (!type.IsIntegral() || type.HasAlias() || !IsColumn(output) || !IsColumn(target) ||
 		    target.Cast<BoundColumnRefExpression>().Binding() != ColumnBinding(projection.table_index, index)) {
 			return;
 		}
