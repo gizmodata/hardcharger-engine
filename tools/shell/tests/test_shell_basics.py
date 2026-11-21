@@ -258,7 +258,7 @@ def test_cd(shell, tmp_path):
         .statement(".shell pwd")
     )
     pwd_result = pwd_test.run()
-    pwd_result.check_stdout('duckdb')
+    pwd_result.check_stdout(os.path.basename(pwd_dir))
 
     random_dir_test = (
         ShellTest(shell)
@@ -1053,7 +1053,7 @@ def test_system_pwd_command(shell):
         .statement(f".sh pwd")
     )
     result = test.run()
-    result.check_stdout('duckdb')
+    result.check_stdout(os.path.basename(os.getcwd()))
 
 def test_profiling_optimizer(shell):
     test = (
